@@ -150,7 +150,7 @@ pub fn add(
 // remove
 // ---------------------------------------------------------------------------
 
-pub fn remove(ws_name: Option<&str>, repo: &str, force: bool) -> Result<()> {
+pub fn remove(ws_name: Option<&str>, repo: &str, force: bool, delete_branch: bool) -> Result<()> {
     let (ws_dir, mut manifest) = workspace::resolve_workspace(ws_name)?;
 
     let entry = manifest
@@ -173,6 +173,17 @@ pub fn remove(ws_name: Option<&str>, repo: &str, force: bool) -> Result<()> {
 
     manifest.remove_repo(repo);
     manifest.save(&ws_dir)?;
+
+    if delete_branch && entry.branch != "(detached)" {
+        match git::delete_branch(&entry.source, &entry.branch) {
+            Ok(_) => println!("  Deleted branch {}", entry.branch.cyan()),
+            Err(e) => println!(
+                "  {} Could not delete branch {}: {e}",
+                "WARN".yellow(),
+                entry.branch.cyan()
+            ),
+        }
+    }
 
     println!(
         "{} Removed '{}' from workspace '{}'",

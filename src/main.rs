@@ -60,6 +60,10 @@ enum Commands {
         /// Force removal even if worktree has uncommitted changes
         #[arg(short, long)]
         force: bool,
+
+        /// Also delete the branch from the source repo after removal
+        #[arg(long)]
+        delete_branch: bool,
     },
 
     /// Destroy a workspace and all its worktrees
@@ -125,9 +129,10 @@ fn main() -> Result<()> {
             first,
             second,
             force,
+            delete_branch,
         } => {
             let (ws_name, repo) = split_ws_and_arg(first, second);
-            commands::remove(ws_name.as_deref(), &repo, force)
+            commands::remove(ws_name.as_deref(), &repo, force, delete_branch)
         }
         Commands::Destroy { name, dry_run } => commands::destroy(&name, dry_run),
         Commands::List => commands::list(),

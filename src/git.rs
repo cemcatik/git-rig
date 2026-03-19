@@ -233,6 +233,12 @@ pub fn stash_pop(repo_dir: &Path) -> Result<()> {
     git_run(repo_dir, &["stash", "pop"])
 }
 
+/// Delete a local branch. Uses `-d` (safe delete — refuses if unmerged).
+pub fn delete_branch(repo_dir: &Path, branch: &str) -> Result<()> {
+    git_output(repo_dir, &["branch", "-d", branch])?;
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Misc
 // ---------------------------------------------------------------------------
