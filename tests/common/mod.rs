@@ -3,20 +3,27 @@ use std::process::Command;
 
 use tempfile::TempDir;
 
+// Import production types so test fixtures stay in sync with the real schema.
+#[path = "../../src/workspace.rs"]
+mod workspace;
+use workspace::{Manifest, RepoEntry};
+
 pub struct TestSandbox {
     pub dir: TempDir,
+    /// Cached canonical path (avoids repeated `canonicalize()` syscalls).
+    canonical: PathBuf,
 }
 
 impl TestSandbox {
     pub fn new() -> Self {
-        Self {
-            dir: TempDir::new().expect("failed to create temp dir"),
-        }
+        let dir = TempDir::new().expect("failed to create temp dir");
+        let canonical = dir.path().canonicalize().expect("canonicalize sandbox");
+        Self { dir, canonical }
     }
 
     /// Canonical root path (resolves macOS /var → /private/var).
     pub fn path(&self) -> PathBuf {
-        self.dir.path().canonicalize().expect("canonicalize sandbox")
+        self.canonical.clone()
     }
 
     /// Create a bare remote + clone with an initial commit and `origin/HEAD` set.
@@ -60,13 +67,8 @@ impl TestSandbox {
         let ws_dir = self.path().join(name);
         std::fs::create_dir_all(&ws_dir).expect("create ws dir");
 
-        let manifest = serde_json::json!({
-            "name": name,
-            "repos": []
-        });
-        let path = ws_dir.join(".ws.json");
-        std::fs::write(&path, serde_json::to_string_pretty(&manifest).unwrap())
-            .expect("write .ws.json");
+        let manifest = Manifest::new(name);
+        manifest.save(&ws_dir).expect("write .ws.json");
 
         ws_dir
     }
@@ -77,7 +79,8 @@ impl TestSandbox {
         let ws_dir = self.create_workspace(ws_name);
         let branch = format!("ws/{ws_name}");
 
-        let mut repos = Vec::new();
+        let mut manifest = Manifest::load(&ws_dir).expect("load manifest");
+
         for &repo_name in repo_names {
             let repo_dir = self.create_repo(repo_name);
             let worktree_path = ws_dir.join(repo_name);
@@ -89,22 +92,16 @@ impl TestSandbox {
                 &["worktree", "add", "-b", &branch, wt_str, "origin/main"],
             );
 
-            repos.push(serde_json::json!({
-                "name": repo_name,
-                "source": repo_dir.to_str().unwrap(),
-                "branch": branch,
-                "default_branch": "main",
-                "remote": "origin"
-            }));
+            manifest.add_repo(RepoEntry {
+                name: repo_name.to_string(),
+                source: repo_dir,
+                branch: branch.clone(),
+                default_branch: "main".to_string(),
+                remote: "origin".to_string(),
+            });
         }
 
-        let manifest = serde_json::json!({
-            "name": ws_name,
-            "repos": repos
-        });
-        let path = ws_dir.join(".ws.json");
-        std::fs::write(&path, serde_json::to_string_pretty(&manifest).unwrap())
-            .expect("write .ws.json");
+        manifest.save(&ws_dir).expect("write .ws.json");
 
         ws_dir
     }
@@ -156,7 +153,7 @@ pub fn git(dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&output.stdout).trim().to_string()
 }
 
-/// Like `git()` but doesn't use `-C` — used when the dir doesn't exist yet (e.g., `git clone`).
+/// Like `git()` but uses `current_dir` — needed for `git clone` where the target doesn't exist yet.
 fn run_git(cwd: &Path, args: &[&str]) -> String {
     let output = Command::new("git")
         .current_dir(cwd)

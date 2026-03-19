@@ -2,6 +2,10 @@ use anyhow::{Context, Result, anyhow};
 use std::path::Path;
 use std::process::Command;
 
+/// Sentinel value returned by `current_branch` and stored in `RepoEntry.branch`
+/// when a worktree is in detached HEAD state.
+pub const DETACHED: &str = "(detached)";
+
 /// Run a git command, capture and return stdout. Errors on non-zero exit.
 fn git_output(repo_dir: &Path, args: &[&str]) -> Result<String> {
     let output = Command::new("git")
@@ -41,19 +45,7 @@ fn git_run(repo_dir: &Path, args: &[&str]) -> Result<()> {
 
 /// Run a git command silently — capture both stdout and stderr, error on failure.
 fn git_quiet(repo_dir: &Path, args: &[&str]) -> Result<()> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(repo_dir)
-        .args(args)
-        .output()
-        .with_context(|| format!("failed to run git {:?}", args))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(anyhow!("git {:?} failed: {}", args, stderr.trim()));
-    }
-
-    Ok(())
+    git_output(repo_dir, args).map(|_| ())
 }
 
 // ---------------------------------------------------------------------------
@@ -107,7 +99,7 @@ pub fn remote_branch_exists(repo_dir: &Path, branch: &str, remote: &str) -> bool
 pub fn current_branch(repo_dir: &Path) -> Result<String> {
     let branch = git_output(repo_dir, &["branch", "--show-current"])?;
     if branch.is_empty() {
-        Ok("(detached)".to_string())
+        Ok(DETACHED.to_string())
     } else {
         Ok(branch)
     }
@@ -117,6 +109,10 @@ pub fn current_branch(repo_dir: &Path) -> Result<String> {
 // Worktree operations
 // ---------------------------------------------------------------------------
 
+fn path_str(p: &Path) -> Result<&str> {
+    p.to_str().ok_or_else(|| anyhow!("non-UTF8 path"))
+}
+
 /// Create a worktree with a new branch starting from `start_point`.
 pub fn worktree_add_new_branch(
     source_repo: &Path,
@@ -124,43 +120,32 @@ pub fn worktree_add_new_branch(
     branch: &str,
     start_point: &str,
 ) -> Result<()> {
-    let path_str = worktree_path
-        .to_str()
-        .ok_or_else(|| anyhow!("non-UTF8 path"))?;
     git_run(
         source_repo,
-        &["worktree", "add", "-b", branch, path_str, start_point],
+        &["worktree", "add", "-b", branch, path_str(worktree_path)?, start_point],
     )
 }
 
 /// Create a worktree checking out an existing branch.
 pub fn worktree_add_existing(source_repo: &Path, worktree_path: &Path, branch: &str) -> Result<()> {
-    let path_str = worktree_path
-        .to_str()
-        .ok_or_else(|| anyhow!("non-UTF8 path"))?;
-    git_run(source_repo, &["worktree", "add", path_str, branch])
+    git_run(source_repo, &["worktree", "add", path_str(worktree_path)?, branch])
 }
 
 /// Create a detached worktree at a specific commit.
 pub fn worktree_add_detached(source_repo: &Path, worktree_path: &Path, commit: &str) -> Result<()> {
-    let path_str = worktree_path
-        .to_str()
-        .ok_or_else(|| anyhow!("non-UTF8 path"))?;
     git_run(
         source_repo,
-        &["worktree", "add", "--detach", path_str, commit],
+        &["worktree", "add", "--detach", path_str(worktree_path)?, commit],
     )
 }
 
 /// Remove a worktree. Use `force` to remove even if dirty.
 pub fn worktree_remove(source_repo: &Path, worktree_path: &Path, force: bool) -> Result<()> {
-    let path_str = worktree_path
-        .to_str()
-        .ok_or_else(|| anyhow!("non-UTF8 path"))?;
+    let p = path_str(worktree_path)?;
     if force {
-        git_run(source_repo, &["worktree", "remove", "--force", path_str])
+        git_run(source_repo, &["worktree", "remove", "--force", p])
     } else {
-        git_run(source_repo, &["worktree", "remove", path_str])
+        git_run(source_repo, &["worktree", "remove", p])
     }
 }
 

@@ -100,7 +100,7 @@ pub fn add(
             default_branch.dimmed()
         );
         git::worktree_add_detached(&source_dir, &worktree_path, &start_point)?;
-        "(detached)".to_string()
+        git::DETACHED.to_string()
     } else {
         let branch_name = branch
             .map(|b| b.to_string())
@@ -181,7 +181,7 @@ pub fn remove(ws_name: Option<&str>, repo: &str, force: bool, delete_branch: boo
     manifest.remove_repo(repo);
     manifest.save(&ws_dir)?;
 
-    if delete_branch && entry.branch != "(detached)" {
+    if delete_branch && entry.branch != git::DETACHED {
         match git::delete_branch(&entry.source, &entry.branch) {
             Ok(_) => println!("  Deleted branch {}", entry.branch.cyan()),
             Err(e) => println!(
@@ -214,17 +214,17 @@ pub fn destroy_from(start_dir: &Path, name: &str, dry_run: bool) -> Result<()> {
     let mut ws_dir = start_dir.join(name);
 
     // If not found at start_dir/<name>, try resolving via a parent workspace
-    if !ws_dir.join(".ws.json").exists()
+    if !ws_dir.join(workspace::MANIFEST).exists()
         && let Ok((parent_ws_dir, _)) = workspace::resolve_workspace_from(start_dir, None)
         && let Some(parent) = parent_ws_dir.parent()
     {
         let candidate = parent.join(name);
-        if candidate.join(".ws.json").exists() {
+        if candidate.join(workspace::MANIFEST).exists() {
             ws_dir = candidate;
         }
     }
 
-    if !ws_dir.join(".ws.json").exists() {
+    if !ws_dir.join(workspace::MANIFEST).exists() {
         return Err(anyhow!("workspace '{}' not found", name));
     }
 
@@ -433,7 +433,7 @@ pub fn sync(name: Option<&str>, stash: bool) -> Result<()> {
             continue;
         }
 
-        if repo.branch == "(detached)" {
+        if repo.branch == git::DETACHED {
             println!(
                 "  {} {} (detached, skipped)",
                 "-".yellow(),

@@ -2,7 +2,7 @@ use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-const MANIFEST: &str = ".ws.json";
+pub(crate) const MANIFEST: &str = ".ws.json";
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Manifest {
@@ -89,7 +89,7 @@ impl Manifest {
     }
 
     pub fn has_repo(&self, name: &str) -> bool {
-        self.repos.iter().any(|r| r.name == name)
+        self.find_repo(name).is_some()
     }
 }
 
