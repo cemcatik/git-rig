@@ -61,17 +61,21 @@ fn git_quiet(repo_dir: &Path, args: &[&str]) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 /// Detect the default branch of a repository (main, master, etc.)
-pub fn default_branch(repo_dir: &Path) -> Result<String> {
+pub fn default_branch(repo_dir: &Path, remote: &str) -> Result<String> {
     // Try the symbolic-ref that `git clone` sets up
-    if let Ok(refname) = git_output(repo_dir, &["symbolic-ref", "refs/remotes/origin/HEAD"]) {
-        if let Some(branch) = refname.strip_prefix("refs/remotes/origin/") {
+    let head_ref = format!("refs/remotes/{remote}/HEAD");
+    let prefix = format!("refs/remotes/{remote}/");
+    if let Ok(refname) = git_output(repo_dir, &["symbolic-ref", &head_ref]) {
+        if let Some(branch) = refname.strip_prefix(&prefix) {
             return Ok(branch.to_string());
         }
     }
 
     // Fallback: check common names
     for name in ["main", "master"] {
-        if branch_exists(repo_dir, name) || remote_branch_exists(repo_dir, name) {
+        if branch_exists(repo_dir, name)
+            || remote_branch_exists(repo_dir, name, remote)
+        {
             return Ok(name.to_string());
         }
     }
@@ -90,13 +94,13 @@ pub fn branch_exists(repo_dir: &Path, branch: &str) -> bool {
     .is_ok()
 }
 
-pub fn remote_branch_exists(repo_dir: &Path, branch: &str) -> bool {
+pub fn remote_branch_exists(repo_dir: &Path, branch: &str, remote: &str) -> bool {
     git_output(
         repo_dir,
         &[
             "rev-parse",
             "--verify",
-            &format!("refs/remotes/origin/{branch}"),
+            &format!("refs/remotes/{remote}/{branch}"),
         ],
     )
     .is_ok()
@@ -179,9 +183,14 @@ pub fn is_dirty(repo_dir: &Path) -> Result<bool> {
     Ok(!output.is_empty())
 }
 
-/// Returns (ahead, behind) relative to `origin/<remote_branch>`.
-pub fn ahead_behind(repo_dir: &Path, local: &str, remote_branch: &str) -> Result<(u32, u32)> {
-    let range = format!("origin/{remote_branch}...{local}");
+/// Returns (ahead, behind) relative to `<remote>/<remote_branch>`.
+pub fn ahead_behind(
+    repo_dir: &Path,
+    local: &str,
+    remote_branch: &str,
+    remote: &str,
+) -> Result<(u32, u32)> {
+    let range = format!("{remote}/{remote_branch}...{local}");
     match git_output(repo_dir, &["rev-list", "--left-right", "--count", &range]) {
         Ok(output) => {
             let parts: Vec<&str> = output.split_whitespace().collect();
@@ -205,12 +214,17 @@ pub fn last_commit_summary(repo_dir: &Path) -> Result<String> {
 // Sync operations
 // ---------------------------------------------------------------------------
 
-pub fn fetch(repo_dir: &Path) -> Result<()> {
-    git_quiet(repo_dir, &["fetch", "origin", "--prune"])
+pub fn fetch(repo_dir: &Path, remote: &str) -> Result<()> {
+    git_quiet(repo_dir, &["fetch", remote, "--prune"])
 }
 
-pub fn rebase(repo_dir: &Path, onto: &str) -> Result<()> {
-    git_run(repo_dir, &["rebase", &format!("origin/{onto}")])
+pub fn rebase(repo_dir: &Path, onto: &str, remote: &str) -> Result<()> {
+    git_quiet(repo_dir, &["rebase", &format!("{remote}/{onto}")])
+}
+
+/// Resolve a ref to a short commit hash.
+pub fn rev_parse_short(repo_dir: &Path, rev: &str) -> Result<String> {
+    git_output(repo_dir, &["rev-parse", "--short", rev])
 }
 
 pub fn rebase_abort(repo_dir: &Path) -> Result<()> {

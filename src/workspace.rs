@@ -16,6 +16,13 @@ pub struct RepoEntry {
     pub name: String,
     pub branch: String,
     pub default_branch: String,
+    /// Remote to fetch from (default: "origin")
+    #[serde(default = "default_remote")]
+    pub remote: String,
+}
+
+fn default_remote() -> String {
+    "origin".to_string()
 }
 
 impl Manifest {

@@ -34,8 +34,12 @@ enum Commands {
         #[arg(short, long)]
         branch: Option<String>,
 
-        /// Add as detached HEAD (read-only reference)
+        /// Git remote to fetch from (default: origin)
         #[arg(short, long)]
+        remote: Option<String>,
+
+        /// Add as detached HEAD (read-only reference)
+        #[arg(long)]
         detach: bool,
     },
 
@@ -85,10 +89,17 @@ fn main() -> Result<()> {
             first,
             second,
             branch,
+            remote,
             detach,
         } => {
             let (ws_name, repo) = split_ws_and_repo(first, second);
-            commands::add(ws_name.as_deref(), &repo, branch.as_deref(), detach)
+            commands::add(
+                ws_name.as_deref(),
+                &repo,
+                branch.as_deref(),
+                remote.as_deref(),
+                detach,
+            )
         }
         Commands::Remove { first, second } => {
             let (ws_name, repo) = split_ws_and_repo(first, second);

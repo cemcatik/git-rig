@@ -40,7 +40,13 @@ pub fn create(name: &str) -> Result<()> {
 // add
 // ---------------------------------------------------------------------------
 
-pub fn add(ws_name: Option<&str>, repo: &str, branch: Option<&str>, detach: bool) -> Result<()> {
+pub fn add(
+    ws_name: Option<&str>,
+    repo: &str,
+    branch: Option<&str>,
+    remote: Option<&str>,
+    detach: bool,
+) -> Result<()> {
     let (ws_dir, mut manifest) = workspace::resolve_workspace(ws_name)?;
 
     if manifest.has_repo(repo) {
@@ -62,14 +68,16 @@ pub fn add(ws_name: Option<&str>, repo: &str, branch: Option<&str>, detach: bool
         return Err(anyhow!("{} is not a git repository", source_dir.display()));
     }
 
+    let remote = remote.unwrap_or("origin");
+
     // Fetch latest before creating the worktree
-    print!("  Fetching {}... ", repo.bold());
-    git::fetch(&source_dir)?;
+    print!("  Fetching {} ({})... ", repo.bold(), remote.dimmed());
+    git::fetch(&source_dir, remote)?;
     println!("{}", "ok".green());
 
-    let default_branch = git::default_branch(&source_dir)?;
+    let default_branch = git::default_branch(&source_dir, remote)?;
     let worktree_path = manifest.worktree_dir(repo);
-    let start_point = format!("origin/{default_branch}");
+    let start_point = format!("{remote}/{default_branch}");
 
     let recorded_branch;
 
@@ -92,17 +100,17 @@ pub fn add(ws_name: Option<&str>, repo: &str, branch: Option<&str>, detach: bool
                 branch_name.cyan()
             );
             git::worktree_add_existing(&source_dir, &worktree_path, &branch_name)?;
-        } else if git::remote_branch_exists(&source_dir, &branch_name) {
+        } else if git::remote_branch_exists(&source_dir, &branch_name, remote) {
             // Existing remote branch — create local tracking branch
             println!(
-                "  Creating worktree (tracking origin/{})...",
+                "  Creating worktree (tracking {remote}/{})...",
                 branch_name.cyan()
             );
             git::worktree_add_new_branch(
                 &source_dir,
                 &worktree_path,
                 &branch_name,
-                &format!("origin/{branch_name}"),
+                &format!("{remote}/{branch_name}"),
             )?;
         } else {
             // Brand new branch from default
@@ -126,6 +134,7 @@ pub fn add(ws_name: Option<&str>, repo: &str, branch: Option<&str>, detach: bool
         name: repo.to_string(),
         branch: recorded_branch,
         default_branch,
+        remote: remote.to_string(),
     });
     manifest.save(&ws_dir)?;
 
@@ -276,7 +285,8 @@ pub fn status(name: Option<&str>) -> Result<()> {
         let branch = git::current_branch(&worktree_path).unwrap_or_else(|_| "(unknown)".into());
         let dirty = git::is_dirty(&worktree_path).unwrap_or(false);
         let (ahead, behind) =
-            git::ahead_behind(&worktree_path, &branch, &repo.default_branch).unwrap_or((0, 0));
+            git::ahead_behind(&worktree_path, &branch, &repo.default_branch, &repo.remote)
+                .unwrap_or((0, 0));
         let last = git::last_commit_summary(&worktree_path)
             .unwrap_or_else(|_| "no commits".into());
 
@@ -326,8 +336,6 @@ pub fn sync(name: Option<&str>, stash: bool) -> Result<()> {
             continue;
         }
 
-        print!("  {} {}... ", ">".blue(), repo.name.bold());
-
         let dirty = git::is_dirty(&worktree_path).unwrap_or(false);
         let mut stashed = false;
 
@@ -335,19 +343,35 @@ pub fn sync(name: Option<&str>, stash: bool) -> Result<()> {
             match git::stash_push(&worktree_path) {
                 Ok(did_stash) => stashed = did_stash,
                 Err(e) => {
-                    println!("{} (stash failed: {e})", "ERR".red());
+                    println!(
+                        "  {} {} (stash failed: {e})",
+                        "ERR".red(),
+                        repo.name.bold()
+                    );
                     errors.push((repo.name.clone(), format!("stash failed: {e}")));
                     continue;
                 }
             }
         } else if dirty {
-            println!("{} (dirty — use --stash to auto-stash)", "SKIP".yellow());
+            println!(
+                "  {} {} (dirty — use --stash to auto-stash)",
+                "SKIP".yellow(),
+                repo.name.bold()
+            );
             continue;
         }
 
-        // Fetch
-        if let Err(e) = git::fetch(&worktree_path) {
-            println!("{} (fetch failed: {e})", "ERR".red());
+        // Snapshot HEAD before sync
+        let before = git::rev_parse_short(&worktree_path, "HEAD").unwrap_or_default();
+
+        // Fetch from the source repo (shares refs with worktree)
+        let source_dir = manifest.source_repo_dir(&repo.name);
+        if let Err(e) = git::fetch(&source_dir, &repo.remote) {
+            println!(
+                "  {} {} (fetch failed: {e})",
+                "ERR".red(),
+                repo.name.bold()
+            );
             errors.push((repo.name.clone(), format!("fetch failed: {e}")));
             if stashed {
                 let _ = git::stash_pop(&worktree_path);
@@ -355,21 +379,54 @@ pub fn sync(name: Option<&str>, stash: bool) -> Result<()> {
             continue;
         }
 
-        // Rebase
-        match git::rebase(&worktree_path, &repo.default_branch) {
+        // Rebase worktree branch onto origin/<default>
+        match git::rebase(&worktree_path, &repo.default_branch, &repo.remote) {
             Ok(_) => {
+                let after = git::rev_parse_short(&worktree_path, "HEAD").unwrap_or_default();
+                let (_ahead, behind) = git::ahead_behind(
+                    &worktree_path,
+                    &repo.branch,
+                    &repo.default_branch,
+                    &repo.remote,
+                )
+                .unwrap_or((0, 0));
+
+                let moved = if before == after {
+                    "already up to date".dimmed().to_string()
+                } else {
+                    format!("{} -> {}", before.dimmed(), after.green())
+                };
+
+                let behind_info = if behind > 0 {
+                    format!(" (still {} behind)", format!("{behind}").red())
+                } else {
+                    String::new()
+                };
+
                 if stashed {
                     match git::stash_pop(&worktree_path) {
-                        Ok(_) => println!("{} (rebased, stash restored)", "ok".green()),
-                        Err(e) => {
-                            println!(
-                                "{} (rebased, but stash pop failed: {e})",
-                                "WARN".yellow()
-                            );
-                        }
+                        Ok(_) => println!(
+                            "  {} {} {}{} (stash restored)",
+                            "ok".green(),
+                            repo.name.bold(),
+                            moved,
+                            behind_info
+                        ),
+                        Err(e) => println!(
+                            "  {} {} {} (stash pop failed: {e})",
+                            "WARN".yellow(),
+                            repo.name.bold(),
+                            moved
+                        ),
                     }
                 } else {
-                    println!("{}", "ok".green());
+                    println!(
+                        "  {} {} {}{}",
+                        "ok".green(),
+                        repo.name.bold(),
+                        moved,
+                        behind_info
+                    );
                 }
             }
             Err(_) => {
@@ -377,7 +434,11 @@ pub fn sync(name: Option<&str>, stash: bool) -> Result<()> {
                 if stashed {
                     let _ = git::stash_pop(&worktree_path);
                 }
-                println!("{} (rebase conflict — aborted)", "ERR".red());
+                println!(
+                    "  {} {} (rebase conflict — aborted)",
+                    "ERR".red(),
+                    repo.name.bold()
+                );
                 errors.push((repo.name.clone(), "rebase conflict".to_string()));
             }
         }
