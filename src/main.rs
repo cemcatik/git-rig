@@ -100,6 +100,25 @@ enum Commands {
         /// Workspace name (optional if inside a workspace)
         name: Option<String>,
     },
+
+    /// Run a command in every repo worktree
+    Exec {
+        /// Workspace name (optional if inside a workspace)
+        #[arg(short = 'w', long = "workspace")]
+        workspace: Option<String>,
+
+        /// Run only in specific repos (can be repeated)
+        #[arg(short, long = "repo", value_name = "REPO")]
+        repos: Vec<String>,
+
+        /// Stop at the first repo whose command fails
+        #[arg(long)]
+        fail_fast: bool,
+
+        /// The command to run (everything after --)
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
+        cmd: Vec<String>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -139,6 +158,12 @@ fn main() -> Result<()> {
         Commands::Status { name } => commands::status(name.as_deref()),
         Commands::Sync { name, stash } => commands::sync(name.as_deref(), stash),
         Commands::Refresh { name } => commands::refresh(name.as_deref()),
+        Commands::Exec {
+            workspace,
+            repos,
+            fail_fast,
+            cmd,
+        } => commands::exec(workspace.as_deref(), &repos, &cmd, fail_fast),
     }
 }
 

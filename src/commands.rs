@@ -1,3 +1,5 @@
+use std::process::Command;
+
 use anyhow::{Context, Result, anyhow};
 use colored::Colorize;
 
@@ -535,6 +537,81 @@ pub fn sync(name: Option<&str>, stash: bool) -> Result<()> {
         println!("{} All repos synced", "ok".green());
     } else {
         println!("{} {} repo(s) had issues:", "WARN".yellow(), errors.len());
+        for (name, err) in &errors {
+            println!("  {} {}: {}", "ERR".red(), name, err);
+        }
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// exec
+// ---------------------------------------------------------------------------
+
+pub fn exec(
+    name: Option<&str>,
+    filter_repos: &[String],
+    cmd: &[String],
+    fail_fast: bool,
+) -> Result<()> {
+    let (ws_dir, manifest) = workspace::resolve_workspace(name)?;
+
+    // Validate --repo filters against manifest
+    for r in filter_repos {
+        if manifest.find_repo(r).is_none() {
+            return Err(anyhow!("'{}' is not in workspace '{}'", r, manifest.name));
+        }
+    }
+
+    let repos: Vec<_> = manifest
+        .repos
+        .iter()
+        .filter(|r| filter_repos.is_empty() || filter_repos.iter().any(|f| f == &r.name))
+        .collect();
+
+    let shell_cmd = cmd.join(" ");
+    let mut errors: Vec<(String, String)> = Vec::new();
+
+    for repo in &repos {
+        let worktree_path = manifest.worktree_dir(&ws_dir, &repo.name);
+
+        println!("{} {}", ">>>".bold(), repo.name.bold());
+
+        if !worktree_path.exists() {
+            println!("{} worktree missing, skipped", "WARN".yellow());
+            println!();
+            continue;
+        }
+
+        let status = Command::new("sh")
+            .arg("-c")
+            .arg(&shell_cmd)
+            .current_dir(&worktree_path)
+            .status();
+
+        match status {
+            Ok(s) if s.success() => {}
+            Ok(s) => {
+                let code = s.code().unwrap_or(-1);
+                errors.push((repo.name.clone(), format!("exit code {code}")));
+                if fail_fast {
+                    break;
+                }
+            }
+            Err(e) => {
+                errors.push((repo.name.clone(), format!("failed to run: {e}")));
+                if fail_fast {
+                    break;
+                }
+            }
+        }
+
+        println!();
+    }
+
+    if !errors.is_empty() {
+        println!("{} {} repo(s) had errors:", "WARN".yellow(), errors.len());
         for (name, err) in &errors {
             println!("  {} {}: {}", "ERR".red(), name, err);
         }
