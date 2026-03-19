@@ -90,6 +90,12 @@ enum Commands {
         #[arg(long)]
         stash: bool,
     },
+
+    /// Re-detect default branches from remotes and update the manifest
+    Refresh {
+        /// Workspace name (optional if inside a workspace)
+        name: Option<String>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -127,6 +133,7 @@ fn main() -> Result<()> {
         Commands::List => commands::list(),
         Commands::Status { name } => commands::status(name.as_deref()),
         Commands::Sync { name, stash } => commands::sync(name.as_deref(), stash),
+        Commands::Refresh { name } => commands::refresh(name.as_deref()),
     }
 }
 

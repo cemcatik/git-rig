@@ -344,6 +344,55 @@ pub fn status(name: Option<&str>) -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
+// refresh
+// ---------------------------------------------------------------------------
+
+pub fn refresh(name: Option<&str>) -> Result<()> {
+    let (ws_dir, mut manifest) = workspace::resolve_workspace(name)?;
+
+    println!("Refreshing workspace '{}'\n", manifest.name.bold());
+
+    let mut updated = false;
+
+    for repo in &mut manifest.repos {
+        print!("  {}: ", repo.name.bold());
+
+        if let Err(e) = git::fetch(&repo.source, &repo.remote) {
+            println!("{} (fetch failed: {e})", "ERR".red());
+            continue;
+        }
+
+        match git::default_branch(&repo.source, &repo.remote) {
+            Ok(new_branch) => {
+                if new_branch != repo.default_branch {
+                    println!("{} → {}", repo.default_branch.dimmed(), new_branch.green());
+                    repo.default_branch = new_branch;
+                    updated = true;
+                } else {
+                    println!("{} (unchanged)", repo.default_branch.dimmed());
+                }
+            }
+            Err(e) => {
+                println!("{} (detect failed: {e})", "ERR".red());
+            }
+        }
+    }
+
+    if updated {
+        manifest.save(&ws_dir)?;
+    }
+
+    println!();
+    if updated {
+        println!("{} Refreshed workspace '{}'", "ok".green(), manifest.name);
+    } else {
+        println!("{} All default branches already up to date", "ok".green());
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // sync
 // ---------------------------------------------------------------------------
 
