@@ -161,6 +161,12 @@ pub fn remove(ws_name: Option<&str>, repo: &str, force: bool) -> Result<()> {
     let worktree_path = manifest.worktree_dir(&ws_dir, repo);
 
     if worktree_path.exists() {
+        if !force && git::is_dirty(&worktree_path)? {
+            return Err(anyhow!(
+                "'{}' has uncommitted changes — use --force to remove anyway",
+                repo
+            ));
+        }
         println!("  Removing worktree for {}...", repo.bold());
         git::worktree_remove(&entry.source, &worktree_path, force)?;
     }
