@@ -29,16 +29,20 @@ Single-binary Rust CLI. Four source files:
 
 ## Testing
 
-No test suite yet. Smoke test manually:
-
 ```bash
-mkdir /tmp/ws-test && cd /tmp/ws-test
-git init repo-a && cd repo-a && git commit --allow-empty -m "init" && git remote add origin . && cd ..
-./target/debug/ws create my-ws
-cd my-ws && ../target/debug/ws add repo-a
-../target/debug/ws status
-cd .. && ../target/debug/ws destroy my-ws
+cargo test                    # all tests (89)
+cargo test --bin ws           # unit tests — manifest ops, workspace resolution
+cargo test --test git_test    # integration tests — git operations against real repos
+cargo test --test cli_test    # E2E tests — full CLI commands via assert_cmd
 ```
+
+Test structure:
+- `src/workspace.rs` (inline `#[cfg(test)]`) — Manifest CRUD, save/load roundtrip, migration, workspace resolution via `_from` variants
+- `tests/git_test.rs` — Branch detection, worktree add/remove, dirty checks, ahead/behind, stash, rebase
+- `tests/cli_test.rs` — All 9 subcommands end-to-end via `assert_cmd`
+- `tests/common/mod.rs` — `TestSandbox` fixture: creates temp dirs with bare+clone repos, worktrees, and workspaces
+
+Each test creates its own `TestSandbox` (temp dir) — no shared state, no CWD mutation. The `_from` variants (`resolve_workspace_from`, `resolve_base_dir_from`, `create_from`, `destroy_from`) accept a start directory so tests avoid `chdir`.
 
 ## Gotchas
 

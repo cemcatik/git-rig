@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::process::Command;
 
 use anyhow::{Context, Result, anyhow};
@@ -12,7 +13,11 @@ use crate::workspace::{self, Manifest, RepoEntry};
 
 pub fn create(name: &str) -> Result<()> {
     let cwd = std::env::current_dir()?;
-    let ws_dir = cwd.join(name);
+    create_from(&cwd, name)
+}
+
+pub fn create_from(start_dir: &Path, name: &str) -> Result<()> {
+    let ws_dir = start_dir.join(name);
 
     if ws_dir.exists() {
         return Err(anyhow!("directory '{}' already exists", ws_dir.display()));
@@ -202,11 +207,15 @@ pub fn remove(ws_name: Option<&str>, repo: &str, force: bool, delete_branch: boo
 
 pub fn destroy(name: &str, dry_run: bool) -> Result<()> {
     let cwd = std::env::current_dir()?;
-    let mut ws_dir = cwd.join(name);
+    destroy_from(&cwd, name, dry_run)
+}
 
-    // If not found at CWD/<name>, try resolving via a parent workspace
+pub fn destroy_from(start_dir: &Path, name: &str, dry_run: bool) -> Result<()> {
+    let mut ws_dir = start_dir.join(name);
+
+    // If not found at start_dir/<name>, try resolving via a parent workspace
     if !ws_dir.join(".ws.json").exists()
-        && let Ok((parent_ws_dir, _)) = workspace::resolve_workspace(None)
+        && let Ok((parent_ws_dir, _)) = workspace::resolve_workspace_from(start_dir, None)
         && let Some(parent) = parent_ws_dir.parent()
     {
         let candidate = parent.join(name);

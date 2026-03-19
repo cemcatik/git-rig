@@ -138,6 +138,17 @@ Each workspace is a directory containing a `.ws.json` manifest:
 - Worktrees are created inside the workspace directory
 - Commands that accept an optional workspace name (`add`, `remove`, `status`, `sync`, `refresh`, `exec`) auto-detect the workspace by walking up from CWD
 
+## Testing
+
+```bash
+cargo test                    # all tests (89)
+cargo test --bin ws           # unit tests — manifest ops, workspace resolution
+cargo test --test git_test    # integration tests — git operations against real repos
+cargo test --test cli_test    # E2E tests — full CLI commands via assert_cmd
+```
+
+Tests create temporary git repos (bare remote + clone) per test case — no shared state, no CWD mutation.
+
 ## Things to know
 
 - A git branch can only be checked out in one worktree at a time. If `ws add` fails with "already checked out", the branch exists in another worktree.
