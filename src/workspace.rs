@@ -7,13 +7,18 @@ const MANIFEST: &str = ".ws.json";
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Manifest {
     pub name: String,
-    pub base_dir: PathBuf,
+    /// Deprecated — retained for migration from old manifests.
+    #[serde(default, skip_serializing)]
+    base_dir: Option<PathBuf>,
     pub repos: Vec<RepoEntry>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RepoEntry {
     pub name: String,
+    /// Absolute path to the local git clone this worktree is based on.
+    #[serde(default)]
+    pub source: PathBuf,
     pub branch: String,
     pub default_branch: String,
     /// Remote to fetch from (default: "origin")
@@ -26,10 +31,10 @@ fn default_remote() -> String {
 }
 
 impl Manifest {
-    pub fn new(name: &str, base_dir: PathBuf) -> Self {
+    pub fn new(name: &str) -> Self {
         Self {
             name: name.to_string(),
-            base_dir,
+            base_dir: None,
             repos: Vec::new(),
         }
     }
@@ -38,8 +43,22 @@ impl Manifest {
         let path = workspace_dir.join(MANIFEST);
         let content = std::fs::read_to_string(&path)
             .with_context(|| format!("failed to read {}", path.display()))?;
-        serde_json::from_str(&content)
-            .with_context(|| format!("failed to parse {}", path.display()))
+        let mut manifest: Self = serde_json::from_str(&content)
+            .with_context(|| format!("failed to parse {}", path.display()))?;
+
+        // Migrate old manifests: derive source from base_dir + repo name
+        if let Some(ref base_dir) = manifest.base_dir {
+            for repo in &mut manifest.repos {
+                if repo.source.as_os_str().is_empty() {
+                    repo.source = base_dir.join(&repo.name);
+                }
+            }
+            manifest.base_dir = None;
+            // Write back migrated manifest
+            manifest.save(workspace_dir)?;
+        }
+
+        Ok(manifest)
     }
 
     pub fn save(&self, workspace_dir: &Path) -> Result<()> {
@@ -49,16 +68,8 @@ impl Manifest {
             .with_context(|| format!("failed to write {}", path.display()))
     }
 
-    pub fn workspace_dir(&self) -> PathBuf {
-        self.base_dir.join(&self.name)
-    }
-
-    pub fn source_repo_dir(&self, repo_name: &str) -> PathBuf {
-        self.base_dir.join(repo_name)
-    }
-
-    pub fn worktree_dir(&self, repo_name: &str) -> PathBuf {
-        self.workspace_dir().join(repo_name)
+    pub fn worktree_dir(&self, ws_dir: &Path, repo_name: &str) -> PathBuf {
+        ws_dir.join(repo_name)
     }
 
     pub fn add_repo(&mut self, entry: RepoEntry) {
@@ -71,6 +82,10 @@ impl Manifest {
         } else {
             None
         }
+    }
+
+    pub fn find_repo(&self, name: &str) -> Option<&RepoEntry> {
+        self.repos.iter().find(|r| r.name == name)
     }
 
     pub fn has_repo(&self, name: &str) -> bool {
@@ -111,13 +126,14 @@ pub fn resolve_workspace(name: Option<&str>) -> Result<(PathBuf, Manifest)> {
                 return Ok((candidate, manifest));
             }
 
-            // 2. If CWD is inside a workspace, try <base_dir>/<name>
+            // 2. If CWD is inside a workspace, try sibling: <ws_root>/../<name>
             if let Some(ws_root) = find_ws_root(&cwd) {
-                let manifest = Manifest::load(&ws_root)?;
-                let candidate = manifest.base_dir.join(name);
-                if candidate.join(MANIFEST).exists() {
-                    let manifest = Manifest::load(&candidate)?;
-                    return Ok((candidate, manifest));
+                if let Some(parent) = ws_root.parent() {
+                    let candidate = parent.join(name);
+                    if candidate.join(MANIFEST).exists() {
+                        let manifest = Manifest::load(&candidate)?;
+                        return Ok((candidate, manifest));
+                    }
                 }
             }
 
@@ -140,13 +156,15 @@ pub fn resolve_workspace(name: Option<&str>) -> Result<(PathBuf, Manifest)> {
 
 /// Determine the base directory for listing workspaces.
 ///
-/// If CWD is a workspace, returns its `base_dir`. Otherwise returns CWD.
+/// If CWD is inside a workspace, returns the workspace dir's parent.
+/// Otherwise returns CWD.
 pub fn resolve_base_dir() -> Result<PathBuf> {
     let cwd = std::env::current_dir()?;
 
     if let Some(ws_root) = find_ws_root(&cwd) {
-        let manifest = Manifest::load(&ws_root)?;
-        return Ok(manifest.base_dir);
+        if let Some(parent) = ws_root.parent() {
+            return Ok(parent.to_path_buf());
+        }
     }
 
     Ok(cwd)

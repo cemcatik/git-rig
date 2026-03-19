@@ -25,18 +25,21 @@ ws create my-feature
 
 ### Add repos
 
+`ws add` takes a path to a locally cloned repo (relative or absolute):
+
 ```bash
 cd ~/projects/my-feature
-ws add api-server                          # new branch ws/my-feature from default
-ws add web-app --branch feature/PROJ-123     # specific branch
-ws add auth-service --remote upstream           # fetch from a different remote
-ws add api-server --detach                 # read-only, detached HEAD
+ws add ../api-server                                # new branch ws/my-feature from default
+ws add ../web-app --branch feature/PROJ-123           # specific branch
+ws add ~/work/infra/auth-service --remote upstream       # repo from a different directory
+ws add ../api-server --detach                       # read-only, detached HEAD
+ws add ../api-server --name api                      # custom name in workspace
 ```
 
-When outside a workspace, pass the name first:
+When outside a workspace, pass the workspace name first:
 
 ```bash
-ws add my-feature api-server
+ws add my-feature ../api-server
 ```
 
 ### Check status
@@ -98,10 +101,10 @@ Each workspace is a directory containing a `.ws.json` manifest:
 ```json
 {
   "name": "my-feature",
-  "base_dir": "/Users/you/projects",
   "repos": [
     {
       "name": "api-server",
+      "source": "/Users/you/projects/api-server",
       "branch": "ws/my-feature",
       "default_branch": "master",
       "remote": "origin"
@@ -110,8 +113,8 @@ Each workspace is a directory containing a `.ws.json` manifest:
 }
 ```
 
-- `base_dir` is where source repos and workspaces live (set at `ws create` time)
-- Repos are resolved as `<base_dir>/<repo-name>`
+- Each repo entry stores the absolute `source` path to the local git clone
+- Repos can live anywhere on disk — they don't need to be siblings of the workspace
 - Worktrees are created inside the workspace directory
 - Commands that accept an optional workspace name (`add`, `remove`, `status`, `sync`) auto-detect the workspace by walking up from CWD
 

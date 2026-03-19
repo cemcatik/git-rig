@@ -22,13 +22,17 @@ enum Commands {
 
     /// Add a repository worktree to a workspace
     Add {
-        /// Repository name, or workspace name if a second argument is provided
-        #[arg(value_name = "REPO_OR_WORKSPACE")]
+        /// Path to local repo, or workspace name if a second argument is provided
+        #[arg(value_name = "PATH_OR_WORKSPACE")]
         first: String,
 
-        /// Repository name (when first argument is workspace name)
-        #[arg(value_name = "REPO")]
+        /// Path to local repo (when first argument is workspace name)
+        #[arg(value_name = "PATH")]
         second: Option<String>,
+
+        /// Name for the repo in the workspace (default: directory basename)
+        #[arg(short, long)]
+        name: Option<String>,
 
         /// Branch to check out or create (default: ws/<workspace-name>)
         #[arg(short, long)]
@@ -92,14 +96,16 @@ fn main() -> Result<()> {
         Commands::Add {
             first,
             second,
+            name,
             branch,
             remote,
             detach,
         } => {
-            let (ws_name, repo) = split_ws_and_repo(first, second);
+            let (ws_name, repo_path) = split_ws_and_arg(first, second);
             commands::add(
                 ws_name.as_deref(),
-                &repo,
+                &repo_path,
+                name.as_deref(),
                 branch.as_deref(),
                 remote.as_deref(),
                 detach,
@@ -110,7 +116,7 @@ fn main() -> Result<()> {
             second,
             force,
         } => {
-            let (ws_name, repo) = split_ws_and_repo(first, second);
+            let (ws_name, repo) = split_ws_and_arg(first, second);
             commands::remove(ws_name.as_deref(), &repo, force)
         }
         Commands::Destroy { name } => commands::destroy(&name),
@@ -120,11 +126,11 @@ fn main() -> Result<()> {
     }
 }
 
-/// When two positional args are given, first is workspace name and second is repo.
-/// When only one is given, it's the repo name and workspace is inferred from CWD.
-fn split_ws_and_repo(first: String, second: Option<String>) -> (Option<String>, String) {
+/// When two positional args are given, first is workspace name and second is the arg (path/name).
+/// When only one is given, it's the arg and workspace is inferred from CWD.
+fn split_ws_and_arg(first: String, second: Option<String>) -> (Option<String>, String) {
     match second {
-        Some(repo) => (Some(first), repo),
+        Some(arg) => (Some(first), arg),
         None => (None, first),
     }
 }
