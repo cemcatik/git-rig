@@ -187,7 +187,7 @@ pub fn remove(ws_name: Option<&str>, repo: &str, force: bool) -> Result<()> {
 // destroy
 // ---------------------------------------------------------------------------
 
-pub fn destroy(name: &str) -> Result<()> {
+pub fn destroy(name: &str, dry_run: bool) -> Result<()> {
     let cwd = std::env::current_dir()?;
     let mut ws_dir = cwd.join(name);
 
@@ -207,6 +207,36 @@ pub fn destroy(name: &str) -> Result<()> {
     }
 
     let manifest = Manifest::load(&ws_dir)?;
+
+    if dry_run {
+        println!(
+            "Would destroy workspace '{}' ({} repos):",
+            name.bold(),
+            manifest.repos.len()
+        );
+
+        for repo in &manifest.repos {
+            let worktree_path = manifest.worktree_dir(&ws_dir, &repo.name);
+
+            if worktree_path.exists() {
+                let dirty = git::is_dirty(&worktree_path).unwrap_or(false);
+                let dirty_indicator = if dirty {
+                    format!(" {}", "[dirty]".yellow())
+                } else {
+                    String::new()
+                };
+                println!(
+                    "  Would remove worktree: {} ({}){}",
+                    repo.name.bold(),
+                    worktree_path.display(),
+                    dirty_indicator
+                );
+            }
+        }
+
+        println!("  Would delete workspace directory: {}", ws_dir.display());
+        return Ok(());
+    }
 
     println!(
         "Destroying workspace '{}' ({} repos)...",

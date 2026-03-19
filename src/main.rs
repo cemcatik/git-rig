@@ -66,6 +66,10 @@ enum Commands {
     Destroy {
         /// Workspace name
         name: String,
+
+        /// Show what would be destroyed without actually removing anything
+        #[arg(long)]
+        dry_run: bool,
     },
 
     /// List all workspaces
@@ -119,7 +123,7 @@ fn main() -> Result<()> {
             let (ws_name, repo) = split_ws_and_arg(first, second);
             commands::remove(ws_name.as_deref(), &repo, force)
         }
-        Commands::Destroy { name } => commands::destroy(&name),
+        Commands::Destroy { name, dry_run } => commands::destroy(&name, dry_run),
         Commands::List => commands::list(),
         Commands::Status { name } => commands::status(name.as_deref()),
         Commands::Sync { name, stash } => commands::sync(name.as_deref(), stash),
