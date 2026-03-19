@@ -52,6 +52,10 @@ enum Commands {
         /// Repository name (when first argument is workspace name)
         #[arg(value_name = "REPO")]
         second: Option<String>,
+
+        /// Force removal even if worktree has uncommitted changes
+        #[arg(short, long)]
+        force: bool,
     },
 
     /// Destroy a workspace and all its worktrees
@@ -101,9 +105,13 @@ fn main() -> Result<()> {
                 detach,
             )
         }
-        Commands::Remove { first, second } => {
+        Commands::Remove {
+            first,
+            second,
+            force,
+        } => {
             let (ws_name, repo) = split_ws_and_repo(first, second);
-            commands::remove(ws_name.as_deref(), &repo)
+            commands::remove(ws_name.as_deref(), &repo, force)
         }
         Commands::Destroy { name } => commands::destroy(&name),
         Commands::List => commands::list(),

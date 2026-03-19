@@ -151,7 +151,7 @@ pub fn add(
 // remove
 // ---------------------------------------------------------------------------
 
-pub fn remove(ws_name: Option<&str>, repo: &str) -> Result<()> {
+pub fn remove(ws_name: Option<&str>, repo: &str, force: bool) -> Result<()> {
     let (ws_dir, mut manifest) = workspace::resolve_workspace(ws_name)?;
 
     let _entry = manifest
@@ -163,7 +163,7 @@ pub fn remove(ws_name: Option<&str>, repo: &str) -> Result<()> {
 
     if worktree_path.exists() {
         println!("  Removing worktree for {}...", repo.bold());
-        git::worktree_remove(&source_dir, &worktree_path, false)?;
+        git::worktree_remove(&source_dir, &worktree_path, force)?;
     }
 
     manifest.save(&ws_dir)?;
