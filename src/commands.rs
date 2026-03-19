@@ -1,0 +1,401 @@
+use anyhow::{anyhow, Result};
+use colored::Colorize;
+
+use crate::git;
+use crate::workspace::{self, Manifest, RepoEntry};
+
+// ---------------------------------------------------------------------------
+// create
+// ---------------------------------------------------------------------------
+
+pub fn create(name: &str) -> Result<()> {
+    let base_dir = std::env::current_dir()?;
+    let ws_dir = base_dir.join(name);
+
+    if ws_dir.exists() {
+        return Err(anyhow!("directory '{}' already exists", ws_dir.display()));
+    }
+
+    std::fs::create_dir_all(&ws_dir)?;
+
+    let manifest = Manifest::new(name, base_dir);
+    manifest.save(&ws_dir)?;
+
+    println!(
+        "{} Created workspace '{}' at {}",
+        "ok".green(),
+        name.bold(),
+        ws_dir.display()
+    );
+    println!(
+        "   Add repos with: {} or cd into it and run: {}",
+        format!("ws add {name} <repo>").dimmed(),
+        "ws add <repo>".dimmed()
+    );
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// add
+// ---------------------------------------------------------------------------
+
+pub fn add(ws_name: Option<&str>, repo: &str, branch: Option<&str>, detach: bool) -> Result<()> {
+    let (ws_dir, mut manifest) = workspace::resolve_workspace(ws_name)?;
+
+    if manifest.has_repo(repo) {
+        return Err(anyhow!(
+            "'{}' is already in workspace '{}'",
+            repo,
+            manifest.name
+        ));
+    }
+
+    let source_dir = manifest.source_repo_dir(repo);
+    if !source_dir.exists() {
+        return Err(anyhow!(
+            "source repository not found at {}",
+            source_dir.display()
+        ));
+    }
+    if !git::is_git_repo(&source_dir) {
+        return Err(anyhow!("{} is not a git repository", source_dir.display()));
+    }
+
+    // Fetch latest before creating the worktree
+    print!("  Fetching {}... ", repo.bold());
+    git::fetch(&source_dir)?;
+    println!("{}", "ok".green());
+
+    let default_branch = git::default_branch(&source_dir)?;
+    let worktree_path = manifest.worktree_dir(repo);
+    let start_point = format!("origin/{default_branch}");
+
+    let recorded_branch;
+
+    if detach {
+        println!(
+            "  Creating worktree (detached at {})...",
+            default_branch.dimmed()
+        );
+        git::worktree_add_detached(&source_dir, &worktree_path, &start_point)?;
+        recorded_branch = "(detached)".to_string();
+    } else {
+        let branch_name = branch
+            .map(|b| b.to_string())
+            .unwrap_or_else(|| format!("ws/{}", manifest.name));
+
+        if git::branch_exists(&source_dir, &branch_name) {
+            // Existing local branch
+            println!(
+                "  Creating worktree (existing branch {})...",
+                branch_name.cyan()
+            );
+            git::worktree_add_existing(&source_dir, &worktree_path, &branch_name)?;
+        } else if git::remote_branch_exists(&source_dir, &branch_name) {
+            // Existing remote branch — create local tracking branch
+            println!(
+                "  Creating worktree (tracking origin/{})...",
+                branch_name.cyan()
+            );
+            git::worktree_add_new_branch(
+                &source_dir,
+                &worktree_path,
+                &branch_name,
+                &format!("origin/{branch_name}"),
+            )?;
+        } else {
+            // Brand new branch from default
+            println!(
+                "  Creating worktree (new branch {} from {})...",
+                branch_name.cyan(),
+                default_branch.dimmed()
+            );
+            git::worktree_add_new_branch(
+                &source_dir,
+                &worktree_path,
+                &branch_name,
+                &start_point,
+            )?;
+        }
+
+        recorded_branch = branch_name;
+    }
+
+    manifest.add_repo(RepoEntry {
+        name: repo.to_string(),
+        branch: recorded_branch,
+        default_branch,
+    });
+    manifest.save(&ws_dir)?;
+
+    println!(
+        "{} Added '{}' to workspace '{}'",
+        "ok".green(),
+        repo.bold(),
+        manifest.name
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// remove
+// ---------------------------------------------------------------------------
+
+pub fn remove(ws_name: Option<&str>, repo: &str) -> Result<()> {
+    let (ws_dir, mut manifest) = workspace::resolve_workspace(ws_name)?;
+
+    let _entry = manifest
+        .remove_repo(repo)
+        .ok_or_else(|| anyhow!("'{}' is not in workspace '{}'", repo, manifest.name))?;
+
+    let source_dir = manifest.source_repo_dir(repo);
+    let worktree_path = manifest.worktree_dir(repo);
+
+    if worktree_path.exists() {
+        println!("  Removing worktree for {}...", repo.bold());
+        git::worktree_remove(&source_dir, &worktree_path, false)?;
+    }
+
+    manifest.save(&ws_dir)?;
+
+    println!(
+        "{} Removed '{}' from workspace '{}'",
+        "ok".green(),
+        repo.bold(),
+        manifest.name
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// destroy
+// ---------------------------------------------------------------------------
+
+pub fn destroy(name: &str) -> Result<()> {
+    let cwd = std::env::current_dir()?;
+    let mut ws_dir = cwd.join(name);
+
+    // If not found at CWD/<name>, try resolving via a parent workspace's base_dir
+    if !ws_dir.join(".ws.json").exists() {
+        if let Ok((_, parent_manifest)) = workspace::resolve_workspace(None) {
+            let candidate = parent_manifest.base_dir.join(name);
+            if candidate.join(".ws.json").exists() {
+                ws_dir = candidate;
+            }
+        }
+    }
+
+    if !ws_dir.join(".ws.json").exists() {
+        return Err(anyhow!("workspace '{}' not found", name));
+    }
+
+    let manifest = Manifest::load(&ws_dir)?;
+
+    println!(
+        "Destroying workspace '{}' ({} repos)...",
+        name.bold(),
+        manifest.repos.len()
+    );
+
+    for repo in &manifest.repos {
+        let source_dir = manifest.source_repo_dir(&repo.name);
+        let worktree_path = manifest.worktree_dir(&repo.name);
+
+        if worktree_path.exists() {
+            print!("  Removing {}... ", repo.name.bold());
+            match git::worktree_remove(&source_dir, &worktree_path, true) {
+                Ok(_) => println!("{}", "ok".green()),
+                Err(e) => {
+                    println!("{}", "failed".red());
+                    eprintln!("    {e}");
+                }
+            }
+        }
+    }
+
+    std::fs::remove_dir_all(&ws_dir)?;
+    println!("{} Destroyed workspace '{}'", "ok".green(), name.bold());
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// list
+// ---------------------------------------------------------------------------
+
+pub fn list() -> Result<()> {
+    let base_dir = workspace::resolve_base_dir()?;
+    let workspaces = workspace::find_workspaces(&base_dir)?;
+
+    if workspaces.is_empty() {
+        println!("No workspaces found in {}", base_dir.display());
+        return Ok(());
+    }
+
+    println!("Workspaces in {}:\n", base_dir.display());
+
+    for ws in &workspaces {
+        println!("  {} ({} repos)", ws.name.bold(), ws.repos.len());
+        for repo in &ws.repos {
+            println!("    {} on {}", repo.name, repo.branch.cyan());
+        }
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// status
+// ---------------------------------------------------------------------------
+
+pub fn status(name: Option<&str>) -> Result<()> {
+    let (ws_dir, manifest) = workspace::resolve_workspace(name)?;
+
+    println!(
+        "Workspace: {} ({})\n",
+        manifest.name.bold(),
+        ws_dir.display()
+    );
+
+    if manifest.repos.is_empty() {
+        println!("  No repos. Add one with: ws add <repo>");
+        return Ok(());
+    }
+
+    for repo in &manifest.repos {
+        let worktree_path = manifest.worktree_dir(&repo.name);
+
+        print!("  {}", repo.name.bold());
+
+        if !worktree_path.exists() {
+            println!(" {}", "(missing)".red());
+            continue;
+        }
+
+        let branch = git::current_branch(&worktree_path).unwrap_or_else(|_| "(unknown)".into());
+        let dirty = git::is_dirty(&worktree_path).unwrap_or(false);
+        let (ahead, behind) =
+            git::ahead_behind(&worktree_path, &branch, &repo.default_branch).unwrap_or((0, 0));
+        let last = git::last_commit_summary(&worktree_path)
+            .unwrap_or_else(|_| "no commits".into());
+
+        print!(" on {}", branch.cyan());
+        if dirty {
+            print!(" {}", "[dirty]".yellow());
+        }
+        if ahead > 0 {
+            print!(" {}", format!("+{ahead}").green());
+        }
+        if behind > 0 {
+            print!(" {}", format!("-{behind}").red());
+        }
+        println!();
+
+        println!("    {} {}", "last:".dimmed(), last.dimmed());
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// sync
+// ---------------------------------------------------------------------------
+
+pub fn sync(name: Option<&str>, stash: bool) -> Result<()> {
+    let (_ws_dir, manifest) = workspace::resolve_workspace(name)?;
+
+    println!("Syncing workspace '{}'\n", manifest.name.bold());
+
+    let mut errors: Vec<(String, String)> = Vec::new();
+
+    for repo in &manifest.repos {
+        let worktree_path = manifest.worktree_dir(&repo.name);
+
+        if !worktree_path.exists() {
+            println!("  {} {} (missing, skipped)", "-".yellow(), repo.name.bold());
+            continue;
+        }
+
+        if repo.branch == "(detached)" {
+            println!(
+                "  {} {} (detached, skipped)",
+                "-".yellow(),
+                repo.name.bold()
+            );
+            continue;
+        }
+
+        print!("  {} {}... ", ">".blue(), repo.name.bold());
+
+        let dirty = git::is_dirty(&worktree_path).unwrap_or(false);
+        let mut stashed = false;
+
+        if dirty && stash {
+            match git::stash_push(&worktree_path) {
+                Ok(did_stash) => stashed = did_stash,
+                Err(e) => {
+                    println!("{} (stash failed: {e})", "ERR".red());
+                    errors.push((repo.name.clone(), format!("stash failed: {e}")));
+                    continue;
+                }
+            }
+        } else if dirty {
+            println!("{} (dirty — use --stash to auto-stash)", "SKIP".yellow());
+            continue;
+        }
+
+        // Fetch
+        if let Err(e) = git::fetch(&worktree_path) {
+            println!("{} (fetch failed: {e})", "ERR".red());
+            errors.push((repo.name.clone(), format!("fetch failed: {e}")));
+            if stashed {
+                let _ = git::stash_pop(&worktree_path);
+            }
+            continue;
+        }
+
+        // Rebase
+        match git::rebase(&worktree_path, &repo.default_branch) {
+            Ok(_) => {
+                if stashed {
+                    match git::stash_pop(&worktree_path) {
+                        Ok(_) => println!("{} (rebased, stash restored)", "ok".green()),
+                        Err(e) => {
+                            println!(
+                                "{} (rebased, but stash pop failed: {e})",
+                                "WARN".yellow()
+                            );
+                        }
+                    }
+                } else {
+                    println!("{}", "ok".green());
+                }
+            }
+            Err(_) => {
+                let _ = git::rebase_abort(&worktree_path);
+                if stashed {
+                    let _ = git::stash_pop(&worktree_path);
+                }
+                println!("{} (rebase conflict — aborted)", "ERR".red());
+                errors.push((repo.name.clone(), "rebase conflict".to_string()));
+            }
+        }
+    }
+
+    println!();
+    if errors.is_empty() {
+        println!("{} All repos synced", "ok".green());
+    } else {
+        println!(
+            "{} {} repo(s) had issues:",
+            "WARN".yellow(),
+            errors.len()
+        );
+        for (name, err) in &errors {
+            println!("  {} {}: {}", "ERR".red(), name, err);
+        }
+    }
+
+    Ok(())
+}
