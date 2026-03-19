@@ -74,10 +74,29 @@ Syncing workspace 'my-feature'
 ok All repos synced
 ```
 
+### Run a command across repos
+
+```bash
+ws exec -- git status               # run in all repos
+ws exec --repo api-server -- make   # run in specific repo(s)
+ws exec --fail-fast -- cargo test    # stop on first failure
+ws exec -w my-feature -- git pull    # target a workspace by name
+```
+
+### Refresh default branches
+
+If upstream repos change their default branch (e.g. `master` → `main`), refresh the manifest:
+
+```bash
+ws refresh
+```
+
 ### Remove a repo
 
 ```bash
 ws remove api-server
+ws remove api-server --force            # remove even if worktree is dirty
+ws remove api-server --delete-branch    # also delete the branch from the source repo
 ```
 
 ### List workspaces
@@ -90,6 +109,7 @@ ws list
 
 ```bash
 ws destroy my-feature
+ws destroy my-feature --dry-run    # preview what would be removed
 ```
 
 This removes all worktrees and deletes the workspace directory. Force-removes dirty worktrees.
@@ -116,11 +136,11 @@ Each workspace is a directory containing a `.ws.json` manifest:
 - Each repo entry stores the absolute `source` path to the local git clone
 - Repos can live anywhere on disk — they don't need to be siblings of the workspace
 - Worktrees are created inside the workspace directory
-- Commands that accept an optional workspace name (`add`, `remove`, `status`, `sync`) auto-detect the workspace by walking up from CWD
+- Commands that accept an optional workspace name (`add`, `remove`, `status`, `sync`, `refresh`, `exec`) auto-detect the workspace by walking up from CWD
 
 ## Things to know
 
 - A git branch can only be checked out in one worktree at a time. If `ws add` fails with "already checked out", the branch exists in another worktree.
 - Default branch detection requires `origin/HEAD` (or `<remote>/HEAD`) to be set. For repos not created via `git clone`, run: `git remote set-head origin --auto`
-- `ws destroy` force-removes worktrees. `ws remove` does not — it fails on dirty worktrees.
+- `ws destroy` force-removes worktrees. `ws remove` does not — it fails on dirty worktrees unless `--force` is passed.
 - You can edit `.ws.json` directly to change remotes, branches, or other settings.
