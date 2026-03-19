@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -127,13 +127,13 @@ pub fn resolve_workspace(name: Option<&str>) -> Result<(PathBuf, Manifest)> {
             }
 
             // 2. If CWD is inside a workspace, try sibling: <ws_root>/../<name>
-            if let Some(ws_root) = find_ws_root(&cwd) {
-                if let Some(parent) = ws_root.parent() {
-                    let candidate = parent.join(name);
-                    if candidate.join(MANIFEST).exists() {
-                        let manifest = Manifest::load(&candidate)?;
-                        return Ok((candidate, manifest));
-                    }
+            if let Some(ws_root) = find_ws_root(&cwd)
+                && let Some(parent) = ws_root.parent()
+            {
+                let candidate = parent.join(name);
+                if candidate.join(MANIFEST).exists() {
+                    let manifest = Manifest::load(&candidate)?;
+                    return Ok((candidate, manifest));
                 }
             }
 
@@ -161,10 +161,10 @@ pub fn resolve_workspace(name: Option<&str>) -> Result<(PathBuf, Manifest)> {
 pub fn resolve_base_dir() -> Result<PathBuf> {
     let cwd = std::env::current_dir()?;
 
-    if let Some(ws_root) = find_ws_root(&cwd) {
-        if let Some(parent) = ws_root.parent() {
-            return Ok(parent.to_path_buf());
-        }
+    if let Some(ws_root) = find_ws_root(&cwd)
+        && let Some(parent) = ws_root.parent()
+    {
+        return Ok(parent.to_path_buf());
     }
 
     Ok(cwd)
@@ -176,10 +176,11 @@ pub fn find_workspaces(base_dir: &Path) -> Result<Vec<Manifest>> {
     for entry in std::fs::read_dir(base_dir)? {
         let entry = entry?;
         let path = entry.path();
-        if path.is_dir() && path.join(MANIFEST).exists() {
-            if let Ok(manifest) = Manifest::load(&path) {
-                workspaces.push(manifest);
-            }
+        if path.is_dir()
+            && path.join(MANIFEST).exists()
+            && let Ok(manifest) = Manifest::load(&path)
+        {
+            workspaces.push(manifest);
         }
     }
     workspaces.sort_by(|a, b| a.name.cmp(&b.name));

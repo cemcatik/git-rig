@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use colored::Colorize;
 
 use crate::git;
@@ -122,12 +122,7 @@ pub fn add(
                 branch_name.cyan(),
                 default_branch.dimmed()
             );
-            git::worktree_add_new_branch(
-                &source_dir,
-                &worktree_path,
-                &branch_name,
-                &start_point,
-            )?;
+            git::worktree_add_new_branch(&source_dir, &worktree_path, &branch_name, &start_point)?;
         }
 
         branch_name
@@ -191,14 +186,13 @@ pub fn destroy(name: &str) -> Result<()> {
     let mut ws_dir = cwd.join(name);
 
     // If not found at CWD/<name>, try resolving via a parent workspace
-    if !ws_dir.join(".ws.json").exists() {
-        if let Ok((parent_ws_dir, _)) = workspace::resolve_workspace(None) {
-            if let Some(parent) = parent_ws_dir.parent() {
-                let candidate = parent.join(name);
-                if candidate.join(".ws.json").exists() {
-                    ws_dir = candidate;
-                }
-            }
+    if !ws_dir.join(".ws.json").exists()
+        && let Ok((parent_ws_dir, _)) = workspace::resolve_workspace(None)
+        && let Some(parent) = parent_ws_dir.parent()
+    {
+        let candidate = parent.join(name);
+        if candidate.join(".ws.json").exists() {
+            ws_dir = candidate;
         }
     }
 
@@ -293,8 +287,7 @@ pub fn status(name: Option<&str>) -> Result<()> {
         let (ahead, behind) =
             git::ahead_behind(&worktree_path, &branch, &repo.default_branch, &repo.remote)
                 .unwrap_or((0, 0));
-        let last = git::last_commit_summary(&worktree_path)
-            .unwrap_or_else(|_| "no commits".into());
+        let last = git::last_commit_summary(&worktree_path).unwrap_or_else(|_| "no commits".into());
 
         print!(" on {}", branch.cyan());
         if dirty {
@@ -349,11 +342,7 @@ pub fn sync(name: Option<&str>, stash: bool) -> Result<()> {
             match git::stash_push(&worktree_path) {
                 Ok(did_stash) => stashed = did_stash,
                 Err(e) => {
-                    println!(
-                        "  {} {} (stash failed: {e})",
-                        "ERR".red(),
-                        repo.name.bold()
-                    );
+                    println!("  {} {} (stash failed: {e})", "ERR".red(), repo.name.bold());
                     errors.push((repo.name.clone(), format!("stash failed: {e}")));
                     continue;
                 }
@@ -372,11 +361,7 @@ pub fn sync(name: Option<&str>, stash: bool) -> Result<()> {
 
         // Fetch from the source repo (shares refs with worktree)
         if let Err(e) = git::fetch(&repo.source, &repo.remote) {
-            println!(
-                "  {} {} (fetch failed: {e})",
-                "ERR".red(),
-                repo.name.bold()
-            );
+            println!("  {} {} (fetch failed: {e})", "ERR".red(), repo.name.bold());
             errors.push((repo.name.clone(), format!("fetch failed: {e}")));
             if stashed {
                 let _ = git::stash_pop(&worktree_path);
@@ -453,11 +438,7 @@ pub fn sync(name: Option<&str>, stash: bool) -> Result<()> {
     if errors.is_empty() {
         println!("{} All repos synced", "ok".green());
     } else {
-        println!(
-            "{} {} repo(s) had issues:",
-            "WARN".yellow(),
-            errors.len()
-        );
+        println!("{} {} repo(s) had issues:", "WARN".yellow(), errors.len());
         for (name, err) in &errors {
             println!("  {} {}: {}", "ERR".red(), name, err);
         }

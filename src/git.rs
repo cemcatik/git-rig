@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use std::path::Path;
 use std::process::Command;
 
@@ -65,17 +65,15 @@ pub fn default_branch(repo_dir: &Path, remote: &str) -> Result<String> {
     // Try the symbolic-ref that `git clone` sets up
     let head_ref = format!("refs/remotes/{remote}/HEAD");
     let prefix = format!("refs/remotes/{remote}/");
-    if let Ok(refname) = git_output(repo_dir, &["symbolic-ref", &head_ref]) {
-        if let Some(branch) = refname.strip_prefix(&prefix) {
-            return Ok(branch.to_string());
-        }
+    if let Ok(refname) = git_output(repo_dir, &["symbolic-ref", &head_ref])
+        && let Some(branch) = refname.strip_prefix(&prefix)
+    {
+        return Ok(branch.to_string());
     }
 
     // Fallback: check common names
     for name in ["main", "master"] {
-        if branch_exists(repo_dir, name)
-            || remote_branch_exists(repo_dir, name, remote)
-        {
+        if branch_exists(repo_dir, name) || remote_branch_exists(repo_dir, name, remote) {
             return Ok(name.to_string());
         }
     }
@@ -136,11 +134,7 @@ pub fn worktree_add_new_branch(
 }
 
 /// Create a worktree checking out an existing branch.
-pub fn worktree_add_existing(
-    source_repo: &Path,
-    worktree_path: &Path,
-    branch: &str,
-) -> Result<()> {
+pub fn worktree_add_existing(source_repo: &Path, worktree_path: &Path, branch: &str) -> Result<()> {
     let path_str = worktree_path
         .to_str()
         .ok_or_else(|| anyhow!("non-UTF8 path"))?;
@@ -148,11 +142,7 @@ pub fn worktree_add_existing(
 }
 
 /// Create a detached worktree at a specific commit.
-pub fn worktree_add_detached(
-    source_repo: &Path,
-    worktree_path: &Path,
-    commit: &str,
-) -> Result<()> {
+pub fn worktree_add_detached(source_repo: &Path, worktree_path: &Path, commit: &str) -> Result<()> {
     let path_str = worktree_path
         .to_str()
         .ok_or_else(|| anyhow!("non-UTF8 path"))?;
