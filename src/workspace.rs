@@ -67,8 +67,13 @@ impl Manifest {
         let content = serde_json::to_string_pretty(self)?;
         std::fs::write(&tmp_path, content)
             .with_context(|| format!("failed to write {}", tmp_path.display()))?;
-        std::fs::rename(&tmp_path, &path)
-            .with_context(|| format!("failed to rename {} to {}", tmp_path.display(), path.display()))
+        std::fs::rename(&tmp_path, &path).with_context(|| {
+            format!(
+                "failed to rename {} to {}",
+                tmp_path.display(),
+                path.display()
+            )
+        })
     }
 
     #[allow(clippy::unused_self)]
@@ -291,7 +296,10 @@ mod tests {
     fn manifest_worktree_dir() {
         let m = Manifest::new("ws");
         let ws_dir = Path::new("/base/my-ws");
-        assert_eq!(m.worktree_dir(ws_dir, "repo-a"), PathBuf::from("/base/my-ws/repo-a"));
+        assert_eq!(
+            m.worktree_dir(ws_dir, "repo-a"),
+            PathBuf::from("/base/my-ws/repo-a")
+        );
     }
 
     #[test]
@@ -361,7 +369,10 @@ mod tests {
 
         let loaded = Manifest::load(&ws_dir).unwrap();
         // source should be migrated from base_dir + repo name
-        assert_eq!(loaded.repos[0].source, PathBuf::from(base_dir).join("repo-a"));
+        assert_eq!(
+            loaded.repos[0].source,
+            PathBuf::from(base_dir).join("repo-a")
+        );
 
         // Written-back manifest must not contain base_dir
         let raw = std::fs::read_to_string(ws_dir.join(".rig.json")).unwrap();
@@ -383,7 +394,11 @@ mod tests {
                 // no "remote" field
             }]
         });
-        std::fs::write(ws_dir.join(".rig.json"), serde_json::to_string_pretty(&json).unwrap()).unwrap();
+        std::fs::write(
+            ws_dir.join(".rig.json"),
+            serde_json::to_string_pretty(&json).unwrap(),
+        )
+        .unwrap();
 
         let loaded = Manifest::load(&ws_dir).unwrap();
         assert_eq!(loaded.repos[0].remote, "origin");

@@ -366,7 +366,10 @@ fn destroy_deletes_branches_by_default() {
 
     // Branch should be gone from source repo
     let branches = sandbox.git("repo-a", &["branch", "--list", "rig/my-ws"]);
-    assert!(branches.is_empty(), "branch rig/my-ws should have been deleted");
+    assert!(
+        branches.is_empty(),
+        "branch rig/my-ws should have been deleted"
+    );
 }
 
 #[test]
@@ -541,7 +544,7 @@ fn sync_fast_forward() {
         .current_dir(&ws_dir)
         .assert()
         .success()
-        .stdout(predicate::str::contains("->"));  // hash transition
+        .stdout(predicate::str::contains("->")); // hash transition
 }
 
 // ---------------------------------------------------------------------------

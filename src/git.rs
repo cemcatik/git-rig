@@ -122,20 +122,36 @@ pub fn worktree_add_new_branch(
 ) -> Result<()> {
     git_run(
         source_repo,
-        &["worktree", "add", "-b", branch, path_str(worktree_path)?, start_point],
+        &[
+            "worktree",
+            "add",
+            "-b",
+            branch,
+            path_str(worktree_path)?,
+            start_point,
+        ],
     )
 }
 
 /// Create a worktree checking out an existing branch.
 pub fn worktree_add_existing(source_repo: &Path, worktree_path: &Path, branch: &str) -> Result<()> {
-    git_run(source_repo, &["worktree", "add", path_str(worktree_path)?, branch])
+    git_run(
+        source_repo,
+        &["worktree", "add", path_str(worktree_path)?, branch],
+    )
 }
 
 /// Create a detached worktree at a specific commit.
 pub fn worktree_add_detached(source_repo: &Path, worktree_path: &Path, commit: &str) -> Result<()> {
     git_run(
         source_repo,
-        &["worktree", "add", "--detach", path_str(worktree_path)?, commit],
+        &[
+            "worktree",
+            "add",
+            "--detach",
+            path_str(worktree_path)?,
+            commit,
+        ],
     )
 }
 
@@ -159,12 +175,7 @@ pub fn is_dirty(repo_dir: &Path) -> Result<bool> {
 }
 
 /// Returns (ahead, behind) relative to `<remote>/<remote_branch>`.
-pub fn ahead_behind(
-    repo_dir: &Path,
-    local: &str,
-    remote_branch: &str,
-    remote: &str,
-) -> (u32, u32) {
+pub fn ahead_behind(repo_dir: &Path, local: &str, remote_branch: &str, remote: &str) -> (u32, u32) {
     let range = format!("{remote}/{remote_branch}...{local}");
     match git_output(repo_dir, &["rev-list", "--left-right", "--count", &range]) {
         Ok(output) => {
@@ -208,7 +219,16 @@ pub fn rebase_abort(repo_dir: &Path) -> Result<()> {
 
 pub fn stash_push(repo_dir: &Path) -> Result<bool> {
     let before = git_output(repo_dir, &["stash", "list"])?;
-    git_quiet(repo_dir, &["stash", "push", "--include-untracked", "-m", "git-rig sync auto-stash"])?;
+    git_quiet(
+        repo_dir,
+        &[
+            "stash",
+            "push",
+            "--include-untracked",
+            "-m",
+            "git-rig sync auto-stash",
+        ],
+    )?;
     let after = git_output(repo_dir, &["stash", "list"])?;
     // If the stash list changed, something was stashed
     Ok(before != after)

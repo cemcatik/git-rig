@@ -54,10 +54,7 @@ impl TestSandbox {
         git(&clone_dir, &["push", "-u", "origin", branch]);
 
         // Ensure origin/HEAD is set (git clone usually does this, but be explicit)
-        git(
-            &clone_dir,
-            &["remote", "set-head", "origin", "--auto"],
-        );
+        git(&clone_dir, &["remote", "set-head", "origin", "--auto"]);
 
         clone_dir
     }

@@ -67,7 +67,11 @@ fn remote_branch_exists_true_for_pushed() {
 fn remote_branch_exists_false_for_nonexistent() {
     let sandbox = common::TestSandbox::new();
     let clone = sandbox.create_repo("remote-branch-false");
-    assert!(!git::remote_branch_exists(&clone, "nonexistent-branch", "origin"));
+    assert!(!git::remote_branch_exists(
+        &clone,
+        "nonexistent-branch",
+        "origin"
+    ));
 }
 
 #[test]

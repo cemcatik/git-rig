@@ -103,7 +103,11 @@ pub fn add(
         // Recover from a previous interrupted add
         println!("  Worktree already exists, recovering...");
         let branch = git::current_branch(&worktree_path)?;
-        if branch == git::DETACHED { git::DETACHED.to_string() } else { branch }
+        if branch == git::DETACHED {
+            git::DETACHED.to_string()
+        } else {
+            branch
+        }
     } else if detach {
         println!(
             "  Creating worktree (detached at {})...",
@@ -112,8 +116,7 @@ pub fn add(
         git::worktree_add_detached(&source_dir, &worktree_path, &start_point)?;
         git::DETACHED.to_string()
     } else {
-        let branch_name = branch
-            .map_or_else(|| format!("rig/{}", manifest.name), str::to_string);
+        let branch_name = branch.map_or_else(|| format!("rig/{}", manifest.name), str::to_string);
 
         if git::branch_exists(&source_dir, &branch_name) {
             println!(
@@ -187,7 +190,10 @@ pub fn remove(ws_name: Option<&str>, repo: &str, force: bool, keep_branch: bool)
             git::worktree_remove(&entry.source, &worktree_path, force)?;
         } else {
             // Source repo is gone — skip git worktree remove, just clean up the directory
-            println!("  {} source repo missing, removing directory directly...", "WARN".yellow());
+            println!(
+                "  {} source repo missing, removing directory directly...",
+                "WARN".yellow()
+            );
             std::fs::remove_dir_all(&worktree_path)?;
         }
     }
@@ -224,7 +230,13 @@ pub fn destroy(name: &str, dry_run: bool, yes: bool, keep_branches: bool) -> Res
     destroy_from(&cwd, name, dry_run, yes, keep_branches)
 }
 
-pub fn destroy_from(start_dir: &Path, name: &str, dry_run: bool, yes: bool, keep_branches: bool) -> Result<()> {
+pub fn destroy_from(
+    start_dir: &Path,
+    name: &str,
+    dry_run: bool,
+    yes: bool,
+    keep_branches: bool,
+) -> Result<()> {
     let mut ws_dir = start_dir.join(name);
 
     // If not found at start_dir/<name>, try resolving via a parent workspace
@@ -378,11 +390,7 @@ pub fn list() -> Result<()> {
 pub fn status(name: Option<&str>) -> Result<()> {
     let (ws_dir, manifest) = workspace::resolve_workspace(name)?;
 
-    println!(
-        "Rig: {} ({})\n",
-        manifest.name.bold(),
-        ws_dir.display()
-    );
+    println!("Rig: {} ({})\n", manifest.name.bold(), ws_dir.display());
 
     if manifest.repos.is_empty() {
         println!("  No repos. Add one with: git rig add <repo>");
@@ -531,7 +539,11 @@ pub fn sync(name: Option<&str>, stash: bool) -> Result<()> {
             println!("  {} {} (fetch failed: {e})", "ERR".red(), repo.name.bold());
             errors.push((repo.name.clone(), format!("fetch failed: {e}")));
             if stashed && let Err(e) = git::stash_pop(&worktree_path) {
-                eprintln!("  {} stash pop failed for {}: {e} (changes still in git stash)", "WARN".yellow(), repo.name);
+                eprintln!(
+                    "  {} stash pop failed for {}: {e} (changes still in git stash)",
+                    "WARN".yellow(),
+                    repo.name
+                );
             }
             continue;
         }
@@ -539,13 +551,10 @@ pub fn sync(name: Option<&str>, stash: bool) -> Result<()> {
         // Rebase worktree branch onto origin/<default>
         if git::rebase(&worktree_path, &repo.default_branch, &repo.remote).is_ok() {
             let after = git::rev_parse_short(&worktree_path, "HEAD").unwrap_or_default();
-            let current = git::current_branch(&worktree_path).unwrap_or_else(|_| repo.branch.clone());
-            let (_ahead, behind) = git::ahead_behind(
-                &worktree_path,
-                &current,
-                &repo.default_branch,
-                &repo.remote,
-            );
+            let current =
+                git::current_branch(&worktree_path).unwrap_or_else(|_| repo.branch.clone());
+            let (_ahead, behind) =
+                git::ahead_behind(&worktree_path, &current, &repo.default_branch, &repo.remote);
 
             let moved = if before == after {
                 "already up to date".dimmed().to_string()
@@ -586,10 +595,18 @@ pub fn sync(name: Option<&str>, stash: bool) -> Result<()> {
             }
         } else {
             if let Err(e) = git::rebase_abort(&worktree_path) {
-                eprintln!("  {} rebase abort failed for {}: {e}", "WARN".yellow(), repo.name);
+                eprintln!(
+                    "  {} rebase abort failed for {}: {e}",
+                    "WARN".yellow(),
+                    repo.name
+                );
             }
             if stashed && let Err(e) = git::stash_pop(&worktree_path) {
-                eprintln!("  {} stash pop failed for {}: {e} (changes still in git stash)", "WARN".yellow(), repo.name);
+                eprintln!(
+                    "  {} stash pop failed for {}: {e} (changes still in git stash)",
+                    "WARN".yellow(),
+                    repo.name
+                );
             }
             println!(
                 "  {} {} (rebase conflict — aborted)",

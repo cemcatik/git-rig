@@ -6,7 +6,11 @@ mod git;
 mod workspace;
 
 #[derive(Parser)]
-#[command(name = "git-rig", version, about = "Multi-repo rig manager using git worktrees")]
+#[command(
+    name = "git-rig",
+    version,
+    about = "Multi-repo rig manager using git worktrees"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -110,7 +114,9 @@ enum Commands {
     },
 
     /// Run a command in every repo worktree (use -- before the command)
-    #[command(after_help = "Examples:\n  git rig exec -- git status\n  git rig exec --repo my-repo -- make test\n  git rig exec -- sh -c 'grep foo | wc -l'")]
+    #[command(
+        after_help = "Examples:\n  git rig exec -- git status\n  git rig exec --repo my-repo -- make test\n  git rig exec -- sh -c 'grep foo | wc -l'"
+    )]
     Exec {
         /// Rig name (optional if inside a rig)
         #[arg(short = 'w', long = "rig")]
@@ -180,7 +186,12 @@ fn main() -> Result<()> {
             let (ws_name, repo) = split_ws_and_arg(first, second);
             commands::remove(ws_name.as_deref(), &repo, force, keep_branch)
         }
-        Commands::Destroy { name, dry_run, yes, keep_branches } => commands::destroy(&name, dry_run, yes, keep_branches),
+        Commands::Destroy {
+            name,
+            dry_run,
+            yes,
+            keep_branches,
+        } => commands::destroy(&name, dry_run, yes, keep_branches),
         Commands::List => commands::list(),
         Commands::Status { name } => commands::status(name.as_deref()),
         Commands::Sync { name, stash } => commands::sync(name.as_deref(), stash),
