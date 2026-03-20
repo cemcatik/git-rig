@@ -31,11 +31,11 @@ git rig create my-feature
 
 ```bash
 cd ~/projects/my-feature
-git rig add ../api-server                                # new branch rig/my-feature from default
-git rig add ../web-app --branch feature/PROJ-123           # specific branch
-git rig add ~/work/infra/auth-service --remote upstream       # repo from a different directory
-git rig add ../api-server --detach                       # read-only, detached HEAD
-git rig add ../api-server --name api                      # custom name in workspace
+git rig add ../api-server                                    # new branch rig/my-feature from default
+git rig add ../web-app --branch feature/PROJ-123             # specific branch
+git rig add ~/projects/infra/auth-service --remote upstream  # repo from a different directory
+git rig add ../api-server --detach                           # read-only, detached HEAD
+git rig add ../api-server --name api                         # custom name in rig
 ```
 
 When outside a workspace, pass the workspace name first:
@@ -79,8 +79,8 @@ ok All repos synced
 ### Run a command across repos
 
 ```bash
-git rig exec -- git status               # run in all repos
-git rig exec --repo api-server -- make   # run in specific repo(s)
+git rig exec -- git status                # run in all repos
+git rig exec --repo api-server -- make    # run in specific repo(s)
 git rig exec --fail-fast -- cargo test    # stop on first failure
 git rig exec -w my-feature -- git pull    # target a workspace by name
 ```
