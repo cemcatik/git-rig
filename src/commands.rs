@@ -503,9 +503,10 @@ pub fn sync(name: Option<&str>, stash: bool) -> Result<()> {
         match git::rebase(&worktree_path, &repo.default_branch, &repo.remote) {
             Ok(_) => {
                 let after = git::rev_parse_short(&worktree_path, "HEAD").unwrap_or_default();
+                let current = git::current_branch(&worktree_path).unwrap_or_else(|_| repo.branch.clone());
                 let (_ahead, behind) = git::ahead_behind(
                     &worktree_path,
-                    &repo.branch,
+                    &current,
                     &repo.default_branch,
                     &repo.remote,
                 )
