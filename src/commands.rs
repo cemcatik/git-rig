@@ -177,13 +177,19 @@ pub fn remove(ws_name: Option<&str>, repo: &str, force: bool, delete_branch: boo
     let worktree_path = manifest.worktree_dir(&ws_dir, repo);
 
     if worktree_path.exists() {
-        if !force && git::is_dirty(&worktree_path)? {
-            return Err(anyhow!(
-                "'{repo}' has uncommitted changes — use --force to remove anyway"
-            ));
+        if !entry.source.exists() {
+            // Source repo is gone — skip git worktree remove, just clean up the directory
+            println!("  {} source repo missing, removing directory directly...", "WARN".yellow());
+            std::fs::remove_dir_all(&worktree_path)?;
+        } else {
+            if !force && git::is_dirty(&worktree_path)? {
+                return Err(anyhow!(
+                    "'{repo}' has uncommitted changes — use --force to remove anyway"
+                ));
+            }
+            println!("  Removing worktree for {}...", repo.bold());
+            git::worktree_remove(&entry.source, &worktree_path, force)?;
         }
-        println!("  Removing worktree for {}...", repo.bold());
-        git::worktree_remove(&entry.source, &worktree_path, force)?;
     }
 
     manifest.remove_repo(repo);
