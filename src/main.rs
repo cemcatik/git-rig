@@ -126,6 +126,17 @@ enum Commands {
 }
 
 fn main() -> Result<()> {
+    if std::process::Command::new("git")
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_err()
+    {
+        eprintln!("error: git is not installed or not in PATH");
+        std::process::exit(1);
+    }
+
     let cli = Cli::parse();
 
     match cli.command {
