@@ -177,11 +177,7 @@ pub fn remove(ws_name: Option<&str>, repo: &str, force: bool, delete_branch: boo
     let worktree_path = manifest.worktree_dir(&ws_dir, repo);
 
     if worktree_path.exists() {
-        if !entry.source.exists() {
-            // Source repo is gone — skip git worktree remove, just clean up the directory
-            println!("  {} source repo missing, removing directory directly...", "WARN".yellow());
-            std::fs::remove_dir_all(&worktree_path)?;
-        } else {
+        if entry.source.exists() {
             if !force && git::is_dirty(&worktree_path)? {
                 return Err(anyhow!(
                     "'{repo}' has uncommitted changes — use --force to remove anyway"
@@ -189,6 +185,10 @@ pub fn remove(ws_name: Option<&str>, repo: &str, force: bool, delete_branch: boo
             }
             println!("  Removing worktree for {}...", repo.bold());
             git::worktree_remove(&entry.source, &worktree_path, force)?;
+        } else {
+            // Source repo is gone — skip git worktree remove, just clean up the directory
+            println!("  {} source repo missing, removing directory directly...", "WARN".yellow());
+            std::fs::remove_dir_all(&worktree_path)?;
         }
     }
 
@@ -515,10 +515,8 @@ pub fn sync(name: Option<&str>, stash: bool) -> Result<()> {
         if let Err(e) = git::fetch(&repo.source, &repo.remote) {
             println!("  {} {} (fetch failed: {e})", "ERR".red(), repo.name.bold());
             errors.push((repo.name.clone(), format!("fetch failed: {e}")));
-            if stashed {
-                if let Err(e) = git::stash_pop(&worktree_path) {
-                    eprintln!("  {} stash pop failed for {}: {e} (changes still in git stash)", "WARN".yellow(), repo.name);
-                }
+            if stashed && let Err(e) = git::stash_pop(&worktree_path) {
+                eprintln!("  {} stash pop failed for {}: {e} (changes still in git stash)", "WARN".yellow(), repo.name);
             }
             continue;
         }
@@ -575,10 +573,8 @@ pub fn sync(name: Option<&str>, stash: bool) -> Result<()> {
             if let Err(e) = git::rebase_abort(&worktree_path) {
                 eprintln!("  {} rebase abort failed for {}: {e}", "WARN".yellow(), repo.name);
             }
-            if stashed {
-                if let Err(e) = git::stash_pop(&worktree_path) {
-                    eprintln!("  {} stash pop failed for {}: {e} (changes still in git stash)", "WARN".yellow(), repo.name);
-                }
+            if stashed && let Err(e) = git::stash_pop(&worktree_path) {
+                eprintln!("  {} stash pop failed for {}: {e} (changes still in git stash)", "WARN".yellow(), repo.name);
             }
             println!(
                 "  {} {} (rebase conflict — aborted)",
