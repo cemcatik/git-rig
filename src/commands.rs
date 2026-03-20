@@ -601,7 +601,6 @@ pub fn exec(
         .filter(|r| filter_repos.is_empty() || filter_repos.iter().any(|f| f == &r.name))
         .collect();
 
-    let shell_cmd = cmd.join(" ");
     let mut errors: Vec<(String, String)> = Vec::new();
 
     for repo in &repos {
@@ -615,9 +614,8 @@ pub fn exec(
             continue;
         }
 
-        let status = Command::new("sh")
-            .arg("-c")
-            .arg(&shell_cmd)
+        let status = Command::new(&cmd[0])
+            .args(&cmd[1..])
             .current_dir(&worktree_path)
             .status();
 
@@ -631,7 +629,7 @@ pub fn exec(
                 }
             }
             Err(e) => {
-                errors.push((repo.name.clone(), format!("failed to run: {e}")));
+                errors.push((repo.name.clone(), format!("failed to execute: {e}")));
                 if fail_fast {
                     break;
                 }
