@@ -1,3 +1,6 @@
+# Credential key (sensitive, per-machine)
+.beads-credential-key
+
 # Dolt database (managed by Dolt, not git)
 dolt/
 dolt-access.lock
