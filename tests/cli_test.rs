@@ -246,7 +246,7 @@ fn destroy_success() {
 
     Command::cargo_bin("ws")
         .unwrap()
-        .args(["destroy", "my-ws"])
+        .args(["destroy", "--yes", "my-ws"])
         .current_dir(sandbox.path())
         .assert()
         .success()
@@ -278,11 +278,25 @@ fn destroy_nonexistent() {
 
     Command::cargo_bin("ws")
         .unwrap()
-        .args(["destroy", "does-not-exist"])
+        .args(["destroy", "--yes", "does-not-exist"])
         .current_dir(sandbox.path())
         .assert()
         .failure()
         .stderr(predicate::str::contains("not found"));
+}
+
+#[test]
+fn destroy_without_yes_in_non_tty() {
+    let sandbox = common::TestSandbox::new();
+    sandbox.create_workspace("my-ws");
+
+    Command::cargo_bin("ws")
+        .unwrap()
+        .args(["destroy", "my-ws"])
+        .current_dir(sandbox.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("use --yes"));
 }
 
 // ---------------------------------------------------------------------------

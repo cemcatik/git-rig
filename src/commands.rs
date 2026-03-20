@@ -1,3 +1,4 @@
+use std::io::IsTerminal;
 use std::path::Path;
 use std::process::Command;
 
@@ -205,12 +206,12 @@ pub fn remove(ws_name: Option<&str>, repo: &str, force: bool, delete_branch: boo
 // destroy
 // ---------------------------------------------------------------------------
 
-pub fn destroy(name: &str, dry_run: bool) -> Result<()> {
+pub fn destroy(name: &str, dry_run: bool, yes: bool) -> Result<()> {
     let cwd = std::env::current_dir()?;
-    destroy_from(&cwd, name, dry_run)
+    destroy_from(&cwd, name, dry_run, yes)
 }
 
-pub fn destroy_from(start_dir: &Path, name: &str, dry_run: bool) -> Result<()> {
+pub fn destroy_from(start_dir: &Path, name: &str, dry_run: bool, yes: bool) -> Result<()> {
     let mut ws_dir = start_dir.join(name);
 
     // If not found at start_dir/<name>, try resolving via a parent workspace
@@ -229,6 +230,26 @@ pub fn destroy_from(start_dir: &Path, name: &str, dry_run: bool) -> Result<()> {
     }
 
     let manifest = Manifest::load(&ws_dir)?;
+
+    if !dry_run && !yes {
+        if std::io::stdin().is_terminal() {
+            print!(
+                "Destroy workspace '{}' with {} repo(s)? [y/N] ",
+                name,
+                manifest.repos.len()
+            );
+            use std::io::Write;
+            std::io::stdout().flush()?;
+            let mut input = String::new();
+            std::io::stdin().read_line(&mut input)?;
+            if !input.trim_start().starts_with(['y', 'Y']) {
+                println!("Aborted.");
+                return Ok(());
+            }
+        } else {
+            return Err(anyhow!("use --yes to confirm (stdin is not a terminal)"));
+        }
+    }
 
     if dry_run {
         println!(

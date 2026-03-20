@@ -74,6 +74,10 @@ enum Commands {
         /// Show what would be destroyed without actually removing anything
         #[arg(long)]
         dry_run: bool,
+
+        /// Skip confirmation prompt
+        #[arg(short = 'y', long)]
+        yes: bool,
     },
 
     /// List all workspaces
@@ -153,7 +157,7 @@ fn main() -> Result<()> {
             let (ws_name, repo) = split_ws_and_arg(first, second);
             commands::remove(ws_name.as_deref(), &repo, force, delete_branch)
         }
-        Commands::Destroy { name, dry_run } => commands::destroy(&name, dry_run),
+        Commands::Destroy { name, dry_run, yes } => commands::destroy(&name, dry_run, yes),
         Commands::List => commands::list(),
         Commands::Status { name } => commands::status(name.as_deref()),
         Commands::Sync { name, stash } => commands::sync(name.as_deref(), stash),
