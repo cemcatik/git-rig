@@ -791,6 +791,7 @@ dependencies = [
  "assert_cmd",
  "clap",
  "colored",
+ "libc",
  "predicates",
  "serde",
  "serde_json",

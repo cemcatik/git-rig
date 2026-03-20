@@ -126,6 +126,13 @@ enum Commands {
 }
 
 fn main() -> Result<()> {
+    // Reset SIGPIPE to default behavior so piping (e.g., `ws status | head`)
+    // doesn't cause a panic on broken pipe.
+    #[cfg(unix)]
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
+
     if std::process::Command::new("git")
         .arg("--version")
         .stdout(std::process::Stdio::null())
