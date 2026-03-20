@@ -63,9 +63,12 @@ impl Manifest {
 
     pub fn save(&self, workspace_dir: &Path) -> Result<()> {
         let path = workspace_dir.join(MANIFEST);
+        let tmp_path = workspace_dir.join(format!("{MANIFEST}.tmp"));
         let content = serde_json::to_string_pretty(self)?;
-        std::fs::write(&path, content)
-            .with_context(|| format!("failed to write {}", path.display()))
+        std::fs::write(&tmp_path, content)
+            .with_context(|| format!("failed to write {}", tmp_path.display()))?;
+        std::fs::rename(&tmp_path, &path)
+            .with_context(|| format!("failed to rename {} to {}", tmp_path.display(), path.display()))
     }
 
     pub fn worktree_dir(&self, ws_dir: &Path, repo_name: &str) -> PathBuf {
