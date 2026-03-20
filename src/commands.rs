@@ -492,7 +492,9 @@ pub fn sync(name: Option<&str>, stash: bool) -> Result<()> {
             println!("  {} {} (fetch failed: {e})", "ERR".red(), repo.name.bold());
             errors.push((repo.name.clone(), format!("fetch failed: {e}")));
             if stashed {
-                let _ = git::stash_pop(&worktree_path);
+                if let Err(e) = git::stash_pop(&worktree_path) {
+                    eprintln!("  {} stash pop failed for {}: {e} (changes still in git stash)", "WARN".yellow(), repo.name);
+                }
             }
             continue;
         }
@@ -548,9 +550,13 @@ pub fn sync(name: Option<&str>, stash: bool) -> Result<()> {
                 }
             }
             Err(_) => {
-                let _ = git::rebase_abort(&worktree_path);
+                if let Err(e) = git::rebase_abort(&worktree_path) {
+                    eprintln!("  {} rebase abort failed for {}: {e}", "WARN".yellow(), repo.name);
+                }
                 if stashed {
-                    let _ = git::stash_pop(&worktree_path);
+                    if let Err(e) = git::stash_pop(&worktree_path) {
+                        eprintln!("  {} stash pop failed for {}: {e} (changes still in git stash)", "WARN".yellow(), repo.name);
+                    }
                 }
                 println!(
                     "  {} {} (rebase conflict — aborted)",
