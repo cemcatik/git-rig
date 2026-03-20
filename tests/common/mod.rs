@@ -62,13 +62,13 @@ impl TestSandbox {
         clone_dir
     }
 
-    /// Create a workspace directory with a `.ws.json` manifest (no repos).
+    /// Create a workspace directory with a `.rig.json` manifest (no repos).
     pub fn create_workspace(&self, name: &str) -> PathBuf {
         let ws_dir = self.path().join(name);
         std::fs::create_dir_all(&ws_dir).expect("create ws dir");
 
         let manifest = Manifest::new(name);
-        manifest.save(&ws_dir).expect("write .ws.json");
+        manifest.save(&ws_dir).expect("write .rig.json");
 
         ws_dir
     }
@@ -77,7 +77,7 @@ impl TestSandbox {
     /// Returns the workspace directory.
     pub fn create_workspace_with_repos(&self, ws_name: &str, repo_names: &[&str]) -> PathBuf {
         let ws_dir = self.create_workspace(ws_name);
-        let branch = format!("ws/{ws_name}");
+        let branch = format!("rig/{ws_name}");
 
         let mut manifest = Manifest::load(&ws_dir).expect("load manifest");
 
@@ -101,7 +101,7 @@ impl TestSandbox {
             });
         }
 
-        manifest.save(&ws_dir).expect("write .ws.json");
+        manifest.save(&ws_dir).expect("write .rig.json");
 
         ws_dir
     }

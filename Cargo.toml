@@ -1,5 +1,5 @@
 [package]
-name = "ws"
+name = "git-rig"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"
@@ -9,7 +9,7 @@ clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 anyhow = "1"
-colored = "2"
+colored = "3"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

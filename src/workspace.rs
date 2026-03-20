@@ -2,7 +2,7 @@ use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-pub(crate) const MANIFEST: &str = ".ws.json";
+pub(crate) const MANIFEST: &str = ".rig.json";
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Manifest {
@@ -101,7 +101,7 @@ impl Manifest {
 // Workspace resolution
 // ---------------------------------------------------------------------------
 
-/// Walk up from `start` looking for a `.ws.json` file.
+/// Walk up from `start` looking for a `.rig.json` file.
 pub(crate) fn find_ws_root(start: &Path) -> Option<PathBuf> {
     let mut dir = start.to_path_buf();
     loop {
@@ -117,7 +117,7 @@ pub(crate) fn find_ws_root(start: &Path) -> Option<PathBuf> {
 /// Resolve a workspace directory and its manifest.
 ///
 /// - `Some(name)`: look for `<cwd>/<name>` or `<base_dir>/<name>` (if CWD is a workspace).
-/// - `None`: walk up from CWD to find the nearest `.ws.json`.
+/// - `None`: walk up from CWD to find the nearest `.rig.json`.
 pub fn resolve_workspace(name: Option<&str>) -> Result<(PathBuf, Manifest)> {
     let cwd = std::env::current_dir()?;
     resolve_workspace_from(&cwd, name)
@@ -145,7 +145,7 @@ pub fn resolve_workspace_from(start_dir: &Path, name: Option<&str>) -> Result<(P
                 }
             }
 
-            Err(anyhow!("workspace '{name}' not found"))
+            Err(anyhow!("rig '{name}' not found"))
         }
         None => {
             // Walk up from start_dir
@@ -154,7 +154,7 @@ pub fn resolve_workspace_from(start_dir: &Path, name: Option<&str>) -> Result<(P
                 Ok((ws_root, manifest))
             } else {
                 Err(anyhow!(
-                    "not inside a workspace (no {MANIFEST} found in any parent directory)"
+                    "not inside a rig (no {MANIFEST} found in any parent directory)"
                 ))
             }
         }
@@ -181,7 +181,7 @@ pub fn resolve_base_dir_from(start_dir: &Path) -> PathBuf {
     start_dir.to_path_buf()
 }
 
-/// Find all workspaces (directories containing `.ws.json`) in `base_dir`.
+/// Find all workspaces (directories containing `.rig.json`) in `base_dir`.
 pub fn find_workspaces(base_dir: &Path) -> Result<Vec<Manifest>> {
     let mut workspaces = Vec::new();
     for entry in std::fs::read_dir(base_dir)? {
@@ -207,7 +207,7 @@ mod tests {
         RepoEntry {
             name: name.to_string(),
             source: PathBuf::from("/some/path"),
-            branch: "ws/test".to_string(),
+            branch: "rig/test".to_string(),
             default_branch: "main".to_string(),
             remote: "origin".to_string(),
         }
@@ -303,7 +303,7 @@ mod tests {
         m.add_repo(RepoEntry {
             name: "repo-a".to_string(),
             source: PathBuf::from("/src/repo-a"),
-            branch: "ws/my-ws".to_string(),
+            branch: "rig/my-ws".to_string(),
             default_branch: "main".to_string(),
             remote: "origin".to_string(),
         });
@@ -315,7 +315,7 @@ mod tests {
         let r = &loaded.repos[0];
         assert_eq!(r.name, "repo-a");
         assert_eq!(r.source, PathBuf::from("/src/repo-a"));
-        assert_eq!(r.branch, "ws/my-ws");
+        assert_eq!(r.branch, "rig/my-ws");
         assert_eq!(r.default_branch, "main");
         assert_eq!(r.remote, "origin");
     }
@@ -330,7 +330,7 @@ mod tests {
     fn manifest_load_invalid_json() {
         let tmp = TempDir::new().unwrap();
         let ws_dir = tmp.path().canonicalize().unwrap();
-        std::fs::write(ws_dir.join(".ws.json"), "not valid json {{").unwrap();
+        std::fs::write(ws_dir.join(".rig.json"), "not valid json {{").unwrap();
         assert!(Manifest::load(&ws_dir).is_err());
     }
 
@@ -348,13 +348,13 @@ mod tests {
                 {
                     "name": "repo-a",
                     "source": "",
-                    "branch": "ws/my-ws",
+                    "branch": "rig/my-ws",
                     "default_branch": "main"
                 }
             ]
         });
         std::fs::write(
-            ws_dir.join(".ws.json"),
+            ws_dir.join(".rig.json"),
             serde_json::to_string_pretty(&old_json).unwrap(),
         )
         .unwrap();
@@ -364,7 +364,7 @@ mod tests {
         assert_eq!(loaded.repos[0].source, PathBuf::from(base_dir).join("repo-a"));
 
         // Written-back manifest must not contain base_dir
-        let raw = std::fs::read_to_string(ws_dir.join(".ws.json")).unwrap();
+        let raw = std::fs::read_to_string(ws_dir.join(".rig.json")).unwrap();
         assert!(!raw.contains("base_dir"));
     }
 
@@ -378,12 +378,12 @@ mod tests {
             "repos": [{
                 "name": "repo-a",
                 "source": "/src/repo-a",
-                "branch": "ws/my-ws",
+                "branch": "rig/my-ws",
                 "default_branch": "main"
                 // no "remote" field
             }]
         });
-        std::fs::write(ws_dir.join(".ws.json"), serde_json::to_string_pretty(&json).unwrap()).unwrap();
+        std::fs::write(ws_dir.join(".rig.json"), serde_json::to_string_pretty(&json).unwrap()).unwrap();
 
         let loaded = Manifest::load(&ws_dir).unwrap();
         assert_eq!(loaded.repos[0].remote, "origin");
@@ -398,7 +398,7 @@ mod tests {
         m.add_repo(RepoEntry {
             name: "repo-a".to_string(),
             source: PathBuf::from("/src/repo-a"),
-            branch: "ws/my-ws".to_string(),
+            branch: "rig/my-ws".to_string(),
             default_branch: "main".to_string(),
             remote: "upstream".to_string(),
         });

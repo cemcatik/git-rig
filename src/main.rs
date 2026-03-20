@@ -6,7 +6,7 @@ mod git;
 mod workspace;
 
 #[derive(Parser)]
-#[command(name = "ws", version, about = "Git worktree workspace manager")]
+#[command(name = "git-rig", version, about = "Multi-repo rig manager using git worktrees")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -14,27 +14,27 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Create a new workspace in the current directory
+    /// Create a new rig in the current directory
     Create {
-        /// Workspace name (created as a subdirectory of CWD)
+        /// Rig name (created as a subdirectory of CWD)
         name: String,
     },
 
-    /// Add a repository worktree to a workspace
+    /// Add a repository worktree to a rig
     Add {
-        /// Path to local repo, or workspace name if a second argument is provided
-        #[arg(value_name = "PATH_OR_WORKSPACE")]
+        /// Path to local repo, or rig name if a second argument is provided
+        #[arg(value_name = "PATH_OR_RIG")]
         first: String,
 
-        /// Path to local repo (when first argument is workspace name)
+        /// Path to local repo (when first argument is rig name)
         #[arg(value_name = "PATH")]
         second: Option<String>,
 
-        /// Name for the repo in the workspace (default: directory basename)
+        /// Name for the repo in the rig (default: directory basename)
         #[arg(short, long)]
         name: Option<String>,
 
-        /// Branch to check out or create (default: ws/<workspace-name>)
+        /// Branch to check out or create (default: rig/<rig-name>)
         #[arg(short, long)]
         branch: Option<String>,
 
@@ -47,13 +47,13 @@ enum Commands {
         detach: bool,
     },
 
-    /// Remove a repository worktree from a workspace
+    /// Remove a repository worktree from a rig
     Remove {
-        /// Repository name, or workspace name if a second argument is provided
-        #[arg(value_name = "REPO_OR_WORKSPACE")]
+        /// Repository name, or rig name if a second argument is provided
+        #[arg(value_name = "REPO_OR_RIG")]
         first: String,
 
-        /// Repository name (when first argument is workspace name)
+        /// Repository name (when first argument is rig name)
         #[arg(value_name = "REPO")]
         second: Option<String>,
 
@@ -66,9 +66,9 @@ enum Commands {
         delete_branch: bool,
     },
 
-    /// Destroy a workspace and all its worktrees
+    /// Destroy a rig and all its worktrees
     Destroy {
-        /// Workspace name
+        /// Rig name
         name: String,
 
         /// Show what would be destroyed without actually removing anything
@@ -80,18 +80,18 @@ enum Commands {
         yes: bool,
     },
 
-    /// List all workspaces
+    /// List all rigs
     List,
 
-    /// Show workspace status
+    /// Show rig status
     Status {
-        /// Workspace name (optional if inside a workspace)
+        /// Rig name (optional if inside a rig)
         name: Option<String>,
     },
 
     /// Fetch and rebase all repos onto their default branches
     Sync {
-        /// Workspace name (optional if inside a workspace)
+        /// Rig name (optional if inside a rig)
         name: Option<String>,
 
         /// Auto-stash uncommitted changes before rebasing
@@ -101,16 +101,16 @@ enum Commands {
 
     /// Re-detect default branches from remotes and update the manifest
     Refresh {
-        /// Workspace name (optional if inside a workspace)
+        /// Rig name (optional if inside a rig)
         name: Option<String>,
     },
 
     /// Run a command in every repo worktree (use -- before the command)
-    #[command(after_help = "Examples:\n  ws exec -- git status\n  ws exec --repo my-repo -- make test\n  ws exec -- sh -c 'grep foo | wc -l'")]
+    #[command(after_help = "Examples:\n  git rig exec -- git status\n  git rig exec --repo my-repo -- make test\n  git rig exec -- sh -c 'grep foo | wc -l'")]
     Exec {
-        /// Workspace name (optional if inside a workspace)
-        #[arg(short = 'w', long = "workspace")]
-        workspace: Option<String>,
+        /// Rig name (optional if inside a rig)
+        #[arg(short = 'w', long = "rig")]
+        rig: Option<String>,
 
         /// Run only in specific repos (can be repeated)
         #[arg(short, long = "repo", value_name = "REPO")]
@@ -127,7 +127,7 @@ enum Commands {
 }
 
 fn main() -> Result<()> {
-    // Reset SIGPIPE to default behavior so piping (e.g., `ws status | head`)
+    // Reset SIGPIPE to default behavior so piping (e.g., `git rig status | head`)
     // doesn't cause a panic on broken pipe.
     #[cfg(unix)]
     unsafe {
@@ -182,16 +182,16 @@ fn main() -> Result<()> {
         Commands::Sync { name, stash } => commands::sync(name.as_deref(), stash),
         Commands::Refresh { name } => commands::refresh(name.as_deref()),
         Commands::Exec {
-            workspace,
+            rig,
             repos,
             fail_fast,
             cmd,
-        } => commands::exec(workspace.as_deref(), &repos, &cmd, fail_fast),
+        } => commands::exec(rig.as_deref(), &repos, &cmd, fail_fast),
     }
 }
 
-/// When two positional args are given, first is workspace name and second is the arg (path/name).
-/// When only one is given, it's the arg and workspace is inferred from CWD.
+/// When two positional args are given, first is rig name and second is the arg (path/name).
+/// When only one is given, it's the arg and rig is inferred from CWD.
 fn split_ws_and_arg(first: String, second: Option<String>) -> (Option<String>, String) {
     match second {
         Some(arg) => (Some(first), arg),

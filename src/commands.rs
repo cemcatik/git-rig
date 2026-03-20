@@ -30,15 +30,15 @@ pub fn create_from(start_dir: &Path, name: &str) -> Result<()> {
     manifest.save(&ws_dir)?;
 
     println!(
-        "{} Created workspace '{}' at {}",
+        "{} Created rig '{}' at {}",
         "ok".green(),
         name.bold(),
         ws_dir.display()
     );
     println!(
         "   Add repos with: {} or cd into it and run: {}",
-        format!("ws add {name} <path>").dimmed(),
-        "ws add <path>".dimmed()
+        format!("git rig add {name} <path>").dimmed(),
+        "git rig add <path>".dimmed()
     );
 
     Ok(())
@@ -74,7 +74,7 @@ pub fn add(
 
     if manifest.has_repo(&repo_name) {
         return Err(anyhow!(
-            "'{}' is already in workspace '{}'",
+            "'{}' is already in rig '{}'",
             repo_name,
             manifest.name
         ));
@@ -113,7 +113,7 @@ pub fn add(
         git::DETACHED.to_string()
     } else {
         let branch_name = branch
-            .map_or_else(|| format!("ws/{}", manifest.name), str::to_string);
+            .map_or_else(|| format!("rig/{}", manifest.name), str::to_string);
 
         if git::branch_exists(&source_dir, &branch_name) {
             println!(
@@ -154,7 +154,7 @@ pub fn add(
     manifest.save(&ws_dir)?;
 
     println!(
-        "{} Added '{}' to workspace '{}'",
+        "{} Added '{}' to rig '{}'",
         "ok".green(),
         repo_name.bold(),
         manifest.name
@@ -171,7 +171,7 @@ pub fn remove(ws_name: Option<&str>, repo: &str, force: bool, delete_branch: boo
 
     let entry = manifest
         .find_repo(repo)
-        .ok_or_else(|| anyhow!("'{}' is not in workspace '{}'", repo, manifest.name))?
+        .ok_or_else(|| anyhow!("'{}' is not in rig '{}'", repo, manifest.name))?
         .clone();
 
     let worktree_path = manifest.worktree_dir(&ws_dir, repo);
@@ -207,7 +207,7 @@ pub fn remove(ws_name: Option<&str>, repo: &str, force: bool, delete_branch: boo
     }
 
     println!(
-        "{} Removed '{}' from workspace '{}'",
+        "{} Removed '{}' from rig '{}'",
         "ok".green(),
         repo.bold(),
         manifest.name
@@ -239,7 +239,7 @@ pub fn destroy_from(start_dir: &Path, name: &str, dry_run: bool, yes: bool) -> R
     }
 
     if !ws_dir.join(workspace::MANIFEST).exists() {
-        return Err(anyhow!("workspace '{name}' not found"));
+        return Err(anyhow!("rig '{name}' not found"));
     }
 
     let manifest = Manifest::load(&ws_dir)?;
@@ -247,7 +247,7 @@ pub fn destroy_from(start_dir: &Path, name: &str, dry_run: bool, yes: bool) -> R
     if !dry_run && !yes {
         if std::io::stdin().is_terminal() {
             print!(
-                "Destroy workspace '{}' with {} repo(s)? [y/N] ",
+                "Destroy rig '{}' with {} repo(s)? [y/N] ",
                 name,
                 manifest.repos.len()
             );
@@ -265,7 +265,7 @@ pub fn destroy_from(start_dir: &Path, name: &str, dry_run: bool, yes: bool) -> R
 
     if dry_run {
         println!(
-            "Would destroy workspace '{}' ({} repos):",
+            "Would destroy rig '{}' ({} repos):",
             name.bold(),
             manifest.repos.len()
         );
@@ -289,12 +289,12 @@ pub fn destroy_from(start_dir: &Path, name: &str, dry_run: bool, yes: bool) -> R
             }
         }
 
-        println!("  Would delete workspace directory: {}", ws_dir.display());
+        println!("  Would delete rig directory: {}", ws_dir.display());
         return Ok(());
     }
 
     println!(
-        "Destroying workspace '{}' ({} repos)...",
+        "Destroying rig '{}' ({} repos)...",
         name.bold(),
         manifest.repos.len()
     );
@@ -326,7 +326,7 @@ pub fn destroy_from(start_dir: &Path, name: &str, dry_run: bool, yes: bool) -> R
     }
 
     std::fs::remove_dir_all(&ws_dir)?;
-    println!("{} Destroyed workspace '{}'", "ok".green(), name.bold());
+    println!("{} Destroyed rig '{}'", "ok".green(), name.bold());
 
     Ok(())
 }
@@ -340,11 +340,11 @@ pub fn list() -> Result<()> {
     let workspaces = workspace::find_workspaces(&base_dir)?;
 
     if workspaces.is_empty() {
-        println!("No workspaces found in {}", base_dir.display());
+        println!("No rigs found in {}", base_dir.display());
         return Ok(());
     }
 
-    println!("Workspaces in {}:\n", base_dir.display());
+    println!("Rigs in {}:\n", base_dir.display());
 
     for ws in &workspaces {
         println!("  {} ({} repos)", ws.name.bold(), ws.repos.len());
@@ -364,13 +364,13 @@ pub fn status(name: Option<&str>) -> Result<()> {
     let (ws_dir, manifest) = workspace::resolve_workspace(name)?;
 
     println!(
-        "Workspace: {} ({})\n",
+        "Rig: {} ({})\n",
         manifest.name.bold(),
         ws_dir.display()
     );
 
     if manifest.repos.is_empty() {
-        println!("  No repos. Add one with: ws add <repo>");
+        println!("  No repos. Add one with: git rig add <repo>");
         return Ok(());
     }
 
@@ -416,7 +416,7 @@ pub fn status(name: Option<&str>) -> Result<()> {
 pub fn refresh(name: Option<&str>) -> Result<()> {
     let (ws_dir, mut manifest) = workspace::resolve_workspace(name)?;
 
-    println!("Refreshing workspace '{}'\n", manifest.name.bold());
+    println!("Refreshing rig '{}'\n", manifest.name.bold());
 
     let mut updated = false;
 
@@ -450,7 +450,7 @@ pub fn refresh(name: Option<&str>) -> Result<()> {
 
     println!();
     if updated {
-        println!("{} Refreshed workspace '{}'", "ok".green(), manifest.name);
+        println!("{} Refreshed rig '{}'", "ok".green(), manifest.name);
     } else {
         println!("{} All default branches already up to date", "ok".green());
     }
@@ -466,7 +466,7 @@ pub fn refresh(name: Option<&str>) -> Result<()> {
 pub fn sync(name: Option<&str>, stash: bool) -> Result<()> {
     let (ws_dir, manifest) = workspace::resolve_workspace(name)?;
 
-    println!("Syncing workspace '{}'\n", manifest.name.bold());
+    println!("Syncing rig '{}'\n", manifest.name.bold());
 
     let mut errors: Vec<(String, String)> = Vec::new();
 
@@ -614,7 +614,7 @@ pub fn exec(
     // Validate --repo filters against manifest
     for r in filter_repos {
         if manifest.find_repo(r).is_none() {
-            return Err(anyhow!("'{}' is not in workspace '{}'", r, manifest.name));
+            return Err(anyhow!("'{}' is not in rig '{}'", r, manifest.name));
         }
     }
 

@@ -208,7 +208,7 @@ pub fn rebase_abort(repo_dir: &Path) -> Result<()> {
 
 pub fn stash_push(repo_dir: &Path) -> Result<bool> {
     let before = git_output(repo_dir, &["stash", "list"])?;
-    git_quiet(repo_dir, &["stash", "push", "--include-untracked", "-m", "ws sync auto-stash"])?;
+    git_quiet(repo_dir, &["stash", "push", "--include-untracked", "-m", "git-rig sync auto-stash"])?;
     let after = git_output(repo_dir, &["stash", "list"])?;
     // If the stash list changed, something was stashed
     Ok(before != after)
