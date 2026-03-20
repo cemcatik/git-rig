@@ -287,6 +287,8 @@ pub fn destroy_from(start_dir: &Path, name: &str, dry_run: bool, yes: bool) -> R
         manifest.repos.len()
     );
 
+    let mut failed = 0usize;
+
     for repo in &manifest.repos {
         let worktree_path = manifest.worktree_dir(&ws_dir, &repo.name);
 
@@ -297,9 +299,18 @@ pub fn destroy_from(start_dir: &Path, name: &str, dry_run: bool, yes: bool) -> R
                 Err(e) => {
                     println!("{}", "failed".red());
                     eprintln!("    {e}");
+                    failed += 1;
                 }
             }
         }
+    }
+
+    if failed > 0 {
+        eprintln!(
+            "{} Some worktrees could not be removed. Fix the issues above and retry.",
+            "ERR".red()
+        );
+        return Err(anyhow!("{failed} worktree(s) could not be removed"));
     }
 
     std::fs::remove_dir_all(&ws_dir)?;
