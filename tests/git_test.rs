@@ -1,5 +1,6 @@
 mod common;
 
+#[allow(dead_code)]
 #[path = "../src/git.rs"]
 mod git;
 

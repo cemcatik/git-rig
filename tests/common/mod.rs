@@ -4,16 +4,20 @@ use std::process::Command;
 use tempfile::TempDir;
 
 // Import production types so test fixtures stay in sync with the real schema.
+// Allow dead_code: the test binaries only use a subset of the re-included module.
+#[allow(dead_code)]
 #[path = "../../src/workspace.rs"]
 mod workspace;
 use workspace::{Manifest, RepoEntry};
 
+#[allow(dead_code)]
 pub struct TestSandbox {
     pub dir: TempDir,
     /// Cached canonical path (avoids repeated `canonicalize()` syscalls).
     canonical: PathBuf,
 }
 
+#[allow(dead_code)]
 impl TestSandbox {
     pub fn new() -> Self {
         let dir = TempDir::new().expect("failed to create temp dir");
