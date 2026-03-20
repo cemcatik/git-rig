@@ -468,7 +468,7 @@ fn exec_fail_fast() {
         .args(["exec", "--fail-fast", "--", "false"])
         .current_dir(&ws_dir)
         .assert()
-        .success() // exec always exits 0; errors are reported via stdout
+        .failure() // exec exits non-zero when any repo fails
         .stdout(predicate::str::contains("WARN"))
         .stdout(predicate::str::contains(">>> repo-b").not());
 }

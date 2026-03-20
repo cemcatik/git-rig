@@ -549,6 +549,7 @@ pub fn sync(name: Option<&str>, stash: bool) -> Result<()> {
         for (name, err) in &errors {
             println!("  {} {}: {}", "ERR".red(), name, err);
         }
+        return Err(anyhow!("{} repo(s) had issues", errors.len()));
     }
 
     Ok(())
@@ -624,6 +625,7 @@ pub fn exec(
         for (name, err) in &errors {
             println!("  {} {}: {}", "ERR".red(), name, err);
         }
+        return Err(anyhow!("{} repo(s) had errors", errors.len()));
     }
 
     Ok(())
