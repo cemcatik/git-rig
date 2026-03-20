@@ -95,7 +95,16 @@ pub fn add(
     let worktree_path = manifest.worktree_dir(&ws_dir, &repo_name);
     let start_point = format!("{remote}/{default_branch}");
 
-    let recorded_branch = if detach {
+    // If the worktree directory already exists (e.g., from a previous interrupted add),
+    // skip worktree creation to make the operation retryable.
+    let worktree_exists = worktree_path.exists();
+
+    let recorded_branch = if worktree_exists {
+        // Recover from a previous interrupted add
+        println!("  Worktree already exists, recovering...");
+        let branch = git::current_branch(&worktree_path)?;
+        if branch == git::DETACHED { git::DETACHED.to_string() } else { branch }
+    } else if detach {
         println!(
             "  Creating worktree (detached at {})...",
             default_branch.dimmed()
