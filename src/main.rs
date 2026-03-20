@@ -61,9 +61,9 @@ enum Commands {
         #[arg(short, long)]
         force: bool,
 
-        /// Also delete the branch from the source repo after removal
+        /// Keep the branch in the source repo (default: branch is deleted)
         #[arg(long)]
-        delete_branch: bool,
+        keep_branch: bool,
     },
 
     /// Destroy a rig and all its worktrees
@@ -78,6 +78,10 @@ enum Commands {
         /// Skip confirmation prompt
         #[arg(short = 'y', long)]
         yes: bool,
+
+        /// Keep branches in source repos (default: branches are deleted)
+        #[arg(long)]
+        keep_branches: bool,
     },
 
     /// List all rigs
@@ -171,12 +175,12 @@ fn main() -> Result<()> {
             first,
             second,
             force,
-            delete_branch,
+            keep_branch,
         } => {
             let (ws_name, repo) = split_ws_and_arg(first, second);
-            commands::remove(ws_name.as_deref(), &repo, force, delete_branch)
+            commands::remove(ws_name.as_deref(), &repo, force, keep_branch)
         }
-        Commands::Destroy { name, dry_run, yes } => commands::destroy(&name, dry_run, yes),
+        Commands::Destroy { name, dry_run, yes, keep_branches } => commands::destroy(&name, dry_run, yes, keep_branches),
         Commands::List => commands::list(),
         Commands::Status { name } => commands::status(name.as_deref()),
         Commands::Sync { name, stash } => commands::sync(name.as_deref(), stash),

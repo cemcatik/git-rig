@@ -98,7 +98,7 @@ git rig refresh
 ```bash
 git rig remove api-server
 git rig remove api-server --force            # remove even if worktree is dirty
-git rig remove api-server --delete-branch    # also delete the branch from the source repo
+git rig remove api-server --keep-branch      # keep the branch in the source repo (default: deleted)
 ```
 
 ### List workspaces
@@ -111,10 +111,11 @@ git rig list
 
 ```bash
 git rig destroy my-feature
-git rig destroy my-feature --dry-run    # preview what would be removed
+git rig destroy my-feature --dry-run         # preview what would be removed
+git rig destroy my-feature --keep-branches   # keep branches in source repos
 ```
 
-This removes all worktrees and deletes the workspace directory. Force-removes dirty worktrees.
+This removes all worktrees, deletes their branches, and removes the workspace directory. Force-removes dirty worktrees.
 
 ## How it works
 

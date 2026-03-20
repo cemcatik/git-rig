@@ -238,17 +238,31 @@ fn remove_nonexistent() {
 }
 
 #[test]
-fn remove_with_delete_branch() {
+fn remove_deletes_branch_by_default() {
     let sandbox = common::TestSandbox::new();
     let ws_dir = sandbox.create_workspace_with_repos("my-ws", &["repo-a"]);
 
     Command::cargo_bin("git-rig")
         .unwrap()
-        .args(["remove", "--delete-branch", "repo-a"])
+        .args(["remove", "repo-a"])
         .current_dir(&ws_dir)
         .assert()
         .success()
         .stdout(predicate::str::contains("Deleted branch"));
+}
+
+#[test]
+fn remove_keep_branch() {
+    let sandbox = common::TestSandbox::new();
+    let ws_dir = sandbox.create_workspace_with_repos("my-ws", &["repo-a"]);
+
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .args(["remove", "--keep-branch", "repo-a"])
+        .current_dir(&ws_dir)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Deleted branch").not());
 }
 
 // ---------------------------------------------------------------------------
@@ -333,6 +347,46 @@ fn destroy_with_repos() {
         .stdout(predicate::str::contains("ok"));
 
     assert!(!ws_dir.exists());
+}
+
+#[test]
+fn destroy_deletes_branches_by_default() {
+    let sandbox = common::TestSandbox::new();
+    let ws_dir = sandbox.create_workspace_with_repos("my-ws", &["repo-a"]);
+
+    assert!(ws_dir.join("repo-a").exists());
+
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .args(["destroy", "--yes", "my-ws"])
+        .current_dir(sandbox.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Deleted branch"));
+
+    // Branch should be gone from source repo
+    let branches = sandbox.git("repo-a", &["branch", "--list", "rig/my-ws"]);
+    assert!(branches.is_empty(), "branch rig/my-ws should have been deleted");
+}
+
+#[test]
+fn destroy_keep_branches() {
+    let sandbox = common::TestSandbox::new();
+    let ws_dir = sandbox.create_workspace_with_repos("my-ws", &["repo-a"]);
+
+    assert!(ws_dir.join("repo-a").exists());
+
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .args(["destroy", "--yes", "--keep-branches", "my-ws"])
+        .current_dir(sandbox.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Deleted branch").not());
+
+    // Branch should still exist in source repo
+    let branches = sandbox.git("repo-a", &["branch", "--list", "rig/my-ws"]);
+    assert!(!branches.is_empty(), "branch rig/my-ws should still exist");
 }
 
 #[test]

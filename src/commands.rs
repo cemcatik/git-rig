@@ -166,7 +166,7 @@ pub fn add(
 // remove
 // ---------------------------------------------------------------------------
 
-pub fn remove(ws_name: Option<&str>, repo: &str, force: bool, delete_branch: bool) -> Result<()> {
+pub fn remove(ws_name: Option<&str>, repo: &str, force: bool, keep_branch: bool) -> Result<()> {
     let (ws_dir, mut manifest) = workspace::resolve_workspace(ws_name)?;
 
     let entry = manifest
@@ -195,7 +195,7 @@ pub fn remove(ws_name: Option<&str>, repo: &str, force: bool, delete_branch: boo
     manifest.remove_repo(repo);
     manifest.save(&ws_dir)?;
 
-    if delete_branch && entry.branch != git::DETACHED {
+    if !keep_branch && entry.branch != git::DETACHED {
         match git::delete_branch(&entry.source, &entry.branch) {
             Ok(()) => println!("  Deleted branch {}", entry.branch.cyan()),
             Err(e) => println!(
@@ -219,12 +219,12 @@ pub fn remove(ws_name: Option<&str>, repo: &str, force: bool, delete_branch: boo
 // destroy
 // ---------------------------------------------------------------------------
 
-pub fn destroy(name: &str, dry_run: bool, yes: bool) -> Result<()> {
+pub fn destroy(name: &str, dry_run: bool, yes: bool, keep_branches: bool) -> Result<()> {
     let cwd = std::env::current_dir()?;
-    destroy_from(&cwd, name, dry_run, yes)
+    destroy_from(&cwd, name, dry_run, yes, keep_branches)
 }
 
-pub fn destroy_from(start_dir: &Path, name: &str, dry_run: bool, yes: bool) -> Result<()> {
+pub fn destroy_from(start_dir: &Path, name: &str, dry_run: bool, yes: bool, keep_branches: bool) -> Result<()> {
     let mut ws_dir = start_dir.join(name);
 
     // If not found at start_dir/<name>, try resolving via a parent workspace
@@ -286,6 +286,9 @@ pub fn destroy_from(start_dir: &Path, name: &str, dry_run: bool, yes: bool) -> R
                     worktree_path.display(),
                     dirty_indicator
                 );
+                if !keep_branches && repo.branch != git::DETACHED {
+                    println!("  Would delete branch: {}", repo.branch.cyan());
+                }
             }
         }
 
@@ -307,7 +310,19 @@ pub fn destroy_from(start_dir: &Path, name: &str, dry_run: bool, yes: bool) -> R
         if worktree_path.exists() {
             print!("  Removing {}... ", repo.name.bold());
             match git::worktree_remove(&repo.source, &worktree_path, true) {
-                Ok(()) => println!("{}", "ok".green()),
+                Ok(()) => {
+                    println!("{}", "ok".green());
+                    if !keep_branches && repo.branch != git::DETACHED {
+                        match git::delete_branch(&repo.source, &repo.branch) {
+                            Ok(()) => println!("    Deleted branch {}", repo.branch.cyan()),
+                            Err(e) => println!(
+                                "    {} Could not delete branch {}: {e}",
+                                "WARN".yellow(),
+                                repo.branch.cyan()
+                            ),
+                        }
+                    }
+                }
                 Err(e) => {
                     println!("{}", "failed".red());
                     eprintln!("    {e}");
