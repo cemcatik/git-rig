@@ -71,6 +71,7 @@ impl Manifest {
             .with_context(|| format!("failed to rename {} to {}", tmp_path.display(), path.display()))
     }
 
+    #[allow(clippy::unused_self)]
     pub fn worktree_dir(&self, ws_dir: &Path, repo_name: &str) -> PathBuf {
         ws_dir.join(repo_name)
     }
@@ -144,7 +145,7 @@ pub fn resolve_workspace_from(start_dir: &Path, name: Option<&str>) -> Result<(P
                 }
             }
 
-            Err(anyhow!("workspace '{}' not found", name))
+            Err(anyhow!("workspace '{name}' not found"))
         }
         None => {
             // Walk up from start_dir
@@ -153,8 +154,7 @@ pub fn resolve_workspace_from(start_dir: &Path, name: Option<&str>) -> Result<(P
                 Ok((ws_root, manifest))
             } else {
                 Err(anyhow!(
-                    "not inside a workspace (no {} found in any parent directory)",
-                    MANIFEST
+                    "not inside a workspace (no {MANIFEST} found in any parent directory)"
                 ))
             }
         }

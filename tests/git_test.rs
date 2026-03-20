@@ -191,7 +191,7 @@ fn is_dirty_untracked_file_returns_true() {
 fn ahead_behind_even_returns_zero_zero() {
     let sandbox = common::TestSandbox::new();
     let clone = sandbox.create_repo("ab-even");
-    let (ahead, behind) = git::ahead_behind(&clone, "main", "main", "origin").unwrap();
+    let (ahead, behind) = git::ahead_behind(&clone, "main", "main", "origin");
     assert_eq!((ahead, behind), (0, 0));
 }
 
@@ -201,7 +201,7 @@ fn ahead_behind_local_ahead_returns_n_zero() {
     let clone = sandbox.create_repo("ab-ahead");
     // Commit locally without pushing
     sandbox.commit_file("ab-ahead", "b.txt", "content", "second commit");
-    let (ahead, behind) = git::ahead_behind(&clone, "main", "main", "origin").unwrap();
+    let (ahead, behind) = git::ahead_behind(&clone, "main", "main", "origin");
     assert_eq!((ahead, behind), (1, 0));
 }
 

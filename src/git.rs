@@ -13,7 +13,7 @@ fn git_output(repo_dir: &Path, args: &[&str]) -> Result<String> {
         .arg(repo_dir)
         .args(args)
         .output()
-        .with_context(|| format!("failed to run git {:?}", args))?;
+        .with_context(|| format!("failed to run git {args:?}"))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -30,7 +30,7 @@ fn git_run(repo_dir: &Path, args: &[&str]) -> Result<()> {
         .arg(repo_dir)
         .args(args)
         .status()
-        .with_context(|| format!("failed to run git {:?}", args))?;
+        .with_context(|| format!("failed to run git {args:?}"))?;
 
     if !status.success() {
         return Err(anyhow!(
@@ -164,7 +164,7 @@ pub fn ahead_behind(
     local: &str,
     remote_branch: &str,
     remote: &str,
-) -> Result<(u32, u32)> {
+) -> (u32, u32) {
     let range = format!("{remote}/{remote_branch}...{local}");
     match git_output(repo_dir, &["rev-list", "--left-right", "--count", &range]) {
         Ok(output) => {
@@ -172,12 +172,12 @@ pub fn ahead_behind(
             if parts.len() == 2 {
                 let behind = parts[0].parse().unwrap_or(0);
                 let ahead = parts[1].parse().unwrap_or(0);
-                Ok((ahead, behind))
+                (ahead, behind)
             } else {
-                Ok((0, 0))
+                (0, 0)
             }
         }
-        Err(_) => Ok((0, 0)),
+        Err(_) => (0, 0),
     }
 }
 
@@ -220,8 +220,7 @@ pub fn stash_pop(repo_dir: &Path) -> Result<()> {
 
 /// Delete a local branch. Uses `-D` (force delete) since the caller explicitly requested branch deletion.
 pub fn delete_branch(repo_dir: &Path, branch: &str) -> Result<()> {
-    git_output(repo_dir, &["branch", "-D", branch])?;
-    Ok(())
+    git_quiet(repo_dir, &["branch", "-D", branch])
 }
 
 // ---------------------------------------------------------------------------

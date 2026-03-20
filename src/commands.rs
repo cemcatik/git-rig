@@ -1,4 +1,4 @@
-use std::io::IsTerminal;
+use std::io::{IsTerminal, Write};
 use std::path::Path;
 use std::process::Command;
 
@@ -64,11 +64,11 @@ pub fn add(
 
     // Repo name defaults to directory basename
     let repo_name = name
-        .map(|n| n.to_string())
+        .map(str::to_string)
         .or_else(|| {
             source_dir
                 .file_name()
-                .map(|os| os.to_string_lossy().to_string())
+                .map(|os| os.to_string_lossy().into_owned())
         })
         .ok_or_else(|| anyhow!("cannot determine repo name from path — use --name"))?;
 
@@ -113,8 +113,7 @@ pub fn add(
         git::DETACHED.to_string()
     } else {
         let branch_name = branch
-            .map(|b| b.to_string())
-            .unwrap_or_else(|| format!("ws/{}", manifest.name));
+            .map_or_else(|| format!("ws/{}", manifest.name), str::to_string);
 
         if git::branch_exists(&source_dir, &branch_name) {
             println!(
@@ -180,8 +179,7 @@ pub fn remove(ws_name: Option<&str>, repo: &str, force: bool, delete_branch: boo
     if worktree_path.exists() {
         if !force && git::is_dirty(&worktree_path)? {
             return Err(anyhow!(
-                "'{}' has uncommitted changes — use --force to remove anyway",
-                repo
+                "'{repo}' has uncommitted changes — use --force to remove anyway"
             ));
         }
         println!("  Removing worktree for {}...", repo.bold());
@@ -193,7 +191,7 @@ pub fn remove(ws_name: Option<&str>, repo: &str, force: bool, delete_branch: boo
 
     if delete_branch && entry.branch != git::DETACHED {
         match git::delete_branch(&entry.source, &entry.branch) {
-            Ok(_) => println!("  Deleted branch {}", entry.branch.cyan()),
+            Ok(()) => println!("  Deleted branch {}", entry.branch.cyan()),
             Err(e) => println!(
                 "  {} Could not delete branch {}: {e}",
                 "WARN".yellow(),
@@ -235,7 +233,7 @@ pub fn destroy_from(start_dir: &Path, name: &str, dry_run: bool, yes: bool) -> R
     }
 
     if !ws_dir.join(workspace::MANIFEST).exists() {
-        return Err(anyhow!("workspace '{}' not found", name));
+        return Err(anyhow!("workspace '{name}' not found"));
     }
 
     let manifest = Manifest::load(&ws_dir)?;
@@ -247,7 +245,6 @@ pub fn destroy_from(start_dir: &Path, name: &str, dry_run: bool, yes: bool) -> R
                 name,
                 manifest.repos.len()
             );
-            use std::io::Write;
             std::io::stdout().flush()?;
             let mut input = String::new();
             std::io::stdin().read_line(&mut input)?;
@@ -304,7 +301,7 @@ pub fn destroy_from(start_dir: &Path, name: &str, dry_run: bool, yes: bool) -> R
         if worktree_path.exists() {
             print!("  Removing {}... ", repo.name.bold());
             match git::worktree_remove(&repo.source, &worktree_path, true) {
-                Ok(_) => println!("{}", "ok".green()),
+                Ok(()) => println!("{}", "ok".green()),
                 Err(e) => {
                     println!("{}", "failed".red());
                     eprintln!("    {e}");
@@ -384,8 +381,7 @@ pub fn status(name: Option<&str>) -> Result<()> {
         let branch = git::current_branch(&worktree_path).unwrap_or_else(|_| "(unknown)".into());
         let dirty = git::is_dirty(&worktree_path).unwrap_or(false);
         let (ahead, behind) =
-            git::ahead_behind(&worktree_path, &branch, &repo.default_branch, &repo.remote)
-                .unwrap_or((0, 0));
+            git::ahead_behind(&worktree_path, &branch, &repo.default_branch, &repo.remote);
         let last = git::last_commit_summary(&worktree_path).unwrap_or_else(|_| "no commits".into());
 
         print!(" on {}", branch.cyan());
@@ -410,6 +406,7 @@ pub fn status(name: Option<&str>) -> Result<()> {
 // refresh
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::if_not_else)]
 pub fn refresh(name: Option<&str>) -> Result<()> {
     let (ws_dir, mut manifest) = workspace::resolve_workspace(name)?;
 
@@ -459,6 +456,7 @@ pub fn refresh(name: Option<&str>) -> Result<()> {
 // sync
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_lines)]
 pub fn sync(name: Option<&str>, stash: bool) -> Result<()> {
     let (ws_dir, manifest) = workspace::resolve_workspace(name)?;
 
@@ -520,72 +518,68 @@ pub fn sync(name: Option<&str>, stash: bool) -> Result<()> {
         }
 
         // Rebase worktree branch onto origin/<default>
-        match git::rebase(&worktree_path, &repo.default_branch, &repo.remote) {
-            Ok(_) => {
-                let after = git::rev_parse_short(&worktree_path, "HEAD").unwrap_or_default();
-                let current = git::current_branch(&worktree_path).unwrap_or_else(|_| repo.branch.clone());
-                let (_ahead, behind) = git::ahead_behind(
-                    &worktree_path,
-                    &current,
-                    &repo.default_branch,
-                    &repo.remote,
-                )
-                .unwrap_or((0, 0));
+        if git::rebase(&worktree_path, &repo.default_branch, &repo.remote).is_ok() {
+            let after = git::rev_parse_short(&worktree_path, "HEAD").unwrap_or_default();
+            let current = git::current_branch(&worktree_path).unwrap_or_else(|_| repo.branch.clone());
+            let (_ahead, behind) = git::ahead_behind(
+                &worktree_path,
+                &current,
+                &repo.default_branch,
+                &repo.remote,
+            );
 
-                let moved = if before == after {
-                    "already up to date".dimmed().to_string()
-                } else {
-                    format!("{} -> {}", before.dimmed(), after.green())
-                };
+            let moved = if before == after {
+                "already up to date".dimmed().to_string()
+            } else {
+                format!("{} -> {}", before.dimmed(), after.green())
+            };
 
-                let behind_info = if behind > 0 {
-                    format!(" (still {} behind)", format!("{behind}").red())
-                } else {
-                    String::new()
-                };
+            let behind_info = if behind > 0 {
+                format!(" (still {} behind)", format!("{behind}").red())
+            } else {
+                String::new()
+            };
 
-                if stashed {
-                    match git::stash_pop(&worktree_path) {
-                        Ok(_) => println!(
-                            "  {} {} {}{} (stash restored)",
-                            "ok".green(),
-                            repo.name.bold(),
-                            moved,
-                            behind_info
-                        ),
-                        Err(e) => println!(
-                            "  {} {} {} (stash pop failed: {e})",
-                            "WARN".yellow(),
-                            repo.name.bold(),
-                            moved
-                        ),
-                    }
-                } else {
-                    println!(
-                        "  {} {} {}{}",
+            if stashed {
+                match git::stash_pop(&worktree_path) {
+                    Ok(()) => println!(
+                        "  {} {} {}{} (stash restored)",
                         "ok".green(),
                         repo.name.bold(),
                         moved,
                         behind_info
-                    );
+                    ),
+                    Err(e) => println!(
+                        "  {} {} {} (stash pop failed: {e})",
+                        "WARN".yellow(),
+                        repo.name.bold(),
+                        moved
+                    ),
                 }
-            }
-            Err(_) => {
-                if let Err(e) = git::rebase_abort(&worktree_path) {
-                    eprintln!("  {} rebase abort failed for {}: {e}", "WARN".yellow(), repo.name);
-                }
-                if stashed {
-                    if let Err(e) = git::stash_pop(&worktree_path) {
-                        eprintln!("  {} stash pop failed for {}: {e} (changes still in git stash)", "WARN".yellow(), repo.name);
-                    }
-                }
+            } else {
                 println!(
-                    "  {} {} (rebase conflict — aborted)",
-                    "ERR".red(),
-                    repo.name.bold()
+                    "  {} {} {}{}",
+                    "ok".green(),
+                    repo.name.bold(),
+                    moved,
+                    behind_info
                 );
-                errors.push((repo.name.clone(), "rebase conflict".to_string()));
             }
+        } else {
+            if let Err(e) = git::rebase_abort(&worktree_path) {
+                eprintln!("  {} rebase abort failed for {}: {e}", "WARN".yellow(), repo.name);
+            }
+            if stashed {
+                if let Err(e) = git::stash_pop(&worktree_path) {
+                    eprintln!("  {} stash pop failed for {}: {e} (changes still in git stash)", "WARN".yellow(), repo.name);
+                }
+            }
+            println!(
+                "  {} {} (rebase conflict — aborted)",
+                "ERR".red(),
+                repo.name.bold()
+            );
+            errors.push((repo.name.clone(), "rebase conflict".to_string()));
         }
     }
 
