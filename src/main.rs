@@ -105,7 +105,8 @@ enum Commands {
         name: Option<String>,
     },
 
-    /// Run a command in every repo worktree
+    /// Run a command in every repo worktree (use -- before the command)
+    #[command(after_help = "Examples:\n  ws exec -- git status\n  ws exec --repo my-repo -- make test\n  ws exec -- sh -c 'grep foo | wc -l'")]
     Exec {
         /// Workspace name (optional if inside a workspace)
         #[arg(short = 'w', long = "workspace")]
@@ -119,7 +120,7 @@ enum Commands {
         #[arg(long)]
         fail_fast: bool,
 
-        /// The command to run (everything after --)
+        /// The command to run (must be preceded by --)
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
         cmd: Vec<String>,
     },
