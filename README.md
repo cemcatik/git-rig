@@ -8,11 +8,41 @@ When you symlink repos into a workspace directory, tools that resolve paths (IDE
 
 ## Install
 
+### Homebrew
+
+```bash
+brew install cemcatik/tap/git-rig
+```
+
+### Shell (Linux/macOS)
+
+```bash
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/cemcatik/git-rig/releases/latest/download/git-rig-installer.sh | sh
+```
+
+### PowerShell (Windows)
+
+```powershell
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/cemcatik/git-rig/releases/latest/download/git-rig-installer.ps1 | iex"
+```
+
+### Cargo
+
+```bash
+cargo install --git https://github.com/cemcatik/git-rig
+```
+
+### Download
+
+Pre-built binaries are available on the [releases page](https://github.com/cemcatik/git-rig/releases).
+
+### From source (contributors)
+
 ```bash
 cargo install --path .
 ```
 
-This installs the `git-rig` binary, which is also available as `git rig` (git auto-discovers `git-*` binaries on your PATH).
+The installed binary `git-rig` is also available as `git rig` (git auto-discovers `git-*` binaries on your PATH).
 
 ## Usage
 
