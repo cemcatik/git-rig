@@ -182,6 +182,14 @@ cargo test --test cli_test          # E2E tests — full CLI commands via assert
 
 Tests create temporary git repos (bare remote + clone) per test case — no shared state, no CWD mutation.
 
+## Releasing
+
+```bash
+scripts/release.sh 0.2.0
+```
+
+This bumps the version in `Cargo.toml`, updates `Cargo.lock`, commits, tags, and pushes. The tag push triggers the [release workflow](.github/workflows/release.yml) which builds binaries, creates a GitHub Release, and publishes the Homebrew formula.
+
 ## Things to know
 
 - A git branch can only be checked out in one worktree at a time. If `git rig add` fails with "already checked out", the branch exists in another worktree.
