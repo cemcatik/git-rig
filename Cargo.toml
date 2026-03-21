@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT"
 rust-version = "1.88"
+repository = "https://github.com/cemcatik/git-rig"
+description = "Git worktree workspace manager for multi-repo development"
+homepage = "https://github.com/cemcatik/git-rig"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
@@ -19,3 +22,8 @@ libc = "0.2"
 tempfile = "3"
 assert_cmd = "2"
 predicates = "3"
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
