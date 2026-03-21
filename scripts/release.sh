@@ -45,8 +45,7 @@ cargo check --quiet
 git add Cargo.toml Cargo.lock
 git commit -m "chore: release v$VERSION"
 git tag "$TAG"
-git push
-git push origin "$TAG"
+git push --atomic origin HEAD "$TAG"
 
 echo ""
 echo "Released $TAG — release workflow will start shortly"
