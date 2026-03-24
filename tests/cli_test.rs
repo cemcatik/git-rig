@@ -1,4 +1,7 @@
 mod common;
+#[allow(dead_code)]
+#[path = "../src/error.rs"]
+mod error;
 
 use assert_cmd::Command;
 use predicates::prelude::*;

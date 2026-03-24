@@ -1,6 +1,9 @@
 mod common;
 
 #[allow(dead_code)]
+#[path = "../src/error.rs"]
+mod error;
+#[allow(dead_code)]
 #[path = "../src/git.rs"]
 mod git;
 

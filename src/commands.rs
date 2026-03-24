@@ -5,6 +5,7 @@ use std::process::Command;
 use anyhow::{Context, Result, anyhow};
 use colored::Colorize;
 
+use crate::error::RigError;
 use crate::git;
 use crate::workspace::{self, Manifest, RepoEntry};
 
@@ -21,7 +22,7 @@ pub fn create_from(start_dir: &Path, name: &str) -> Result<()> {
     let ws_dir = start_dir.join(name);
 
     if ws_dir.exists() {
-        return Err(anyhow!("directory '{}' already exists", ws_dir.display()));
+        return Err(RigError::DirectoryAlreadyExists { path: ws_dir }.into());
     }
 
     std::fs::create_dir_all(&ws_dir)?;
@@ -73,15 +74,15 @@ pub fn add(
         .ok_or_else(|| anyhow!("cannot determine repo name from path — use --name"))?;
 
     if manifest.has_repo(&repo_name) {
-        return Err(anyhow!(
-            "'{}' is already in rig '{}'",
-            repo_name,
-            manifest.name
-        ));
+        return Err(RigError::RepoAlreadyInRig {
+            repo: repo_name,
+            rig: manifest.name.clone(),
+        }
+        .into());
     }
 
     if !git::is_git_repo(&source_dir) {
-        return Err(anyhow!("{} is not a git repository", source_dir.display()));
+        return Err(RigError::NotAGitRepo { path: source_dir }.into());
     }
 
     let remote = remote.unwrap_or("origin");
@@ -196,7 +197,10 @@ pub fn remove(ws_name: Option<&str>, repo: &str, force: bool, keep_branch: bool)
 
     let entry = manifest
         .find_repo(repo)
-        .ok_or_else(|| anyhow!("'{}' is not in rig '{}'", repo, manifest.name))?
+        .ok_or_else(|| RigError::RepoNotInRig {
+            repo: repo.to_string(),
+            rig: manifest.name.clone(),
+        })?
         .clone();
 
     let worktree_path = manifest.worktree_dir(&ws_dir, repo);
@@ -204,9 +208,10 @@ pub fn remove(ws_name: Option<&str>, repo: &str, force: bool, keep_branch: bool)
     if worktree_path.exists() {
         if entry.source.exists() {
             if !force && git::is_dirty(&worktree_path)? {
-                return Err(anyhow!(
-                    "'{repo}' has uncommitted changes — use --force to remove anyway"
-                ));
+                return Err(RigError::DirtyWorktree {
+                    repo: repo.to_string(),
+                }
+                .into());
             }
             println!("  Removing worktree for {}...", repo.bold());
             if git::worktree_remove(&entry.source, &worktree_path, force).is_err() {
@@ -290,7 +295,10 @@ pub fn destroy_from(
     }
 
     if !ws_dir.join(workspace::MANIFEST).exists() {
-        return Err(anyhow!("rig '{name}' not found"));
+        return Err(RigError::RigNotFound {
+            name: name.to_string(),
+        }
+        .into());
     }
 
     let manifest = Manifest::load(&ws_dir)?;
@@ -310,7 +318,7 @@ pub fn destroy_from(
                 return Ok(());
             }
         } else {
-            return Err(anyhow!("use --yes to confirm (stdin is not a terminal)"));
+            return Err(RigError::ConfirmationRequired.into());
         }
     }
 
@@ -702,7 +710,11 @@ pub fn exec(
     // Validate --repo filters against manifest
     for r in filter_repos {
         if manifest.find_repo(r).is_none() {
-            return Err(anyhow!("'{}' is not in rig '{}'", r, manifest.name));
+            return Err(RigError::RepoNotInRig {
+                repo: r.to_string(),
+                rig: manifest.name.clone(),
+            }
+            .into());
         }
     }
 

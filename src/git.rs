@@ -2,6 +2,8 @@ use anyhow::{Context, Result, anyhow};
 use std::path::Path;
 use std::process::Command;
 
+use crate::error::RigError;
+
 /// Sentinel value returned by `current_branch` and stored in `RepoEntry.branch`
 /// when a worktree is in detached HEAD state.
 pub const DETACHED: &str = "(detached)";
@@ -70,12 +72,11 @@ pub fn default_branch(repo_dir: &Path, remote: &str) -> Result<String> {
         }
     }
 
-    Err(anyhow!(
-        "cannot determine default branch for {}\n  \
-         hint: run `git remote set-head {remote} <branch>` in the source repo\n  \
-         hint: this is set automatically by `git clone` but not by `git init`",
-        repo_dir.display()
-    ))
+    Err(RigError::DefaultBranchNotFound {
+        repo: repo_dir.to_path_buf(),
+        remote: remote.to_string(),
+    }
+    .into())
 }
 
 pub fn branch_exists(repo_dir: &Path, branch: &str) -> bool {

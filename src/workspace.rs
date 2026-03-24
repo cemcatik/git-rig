@@ -1,6 +1,8 @@
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+
+use crate::error::RigError;
 
 pub(crate) const MANIFEST: &str = ".rig.json";
 
@@ -150,7 +152,10 @@ pub fn resolve_workspace_from(start_dir: &Path, name: Option<&str>) -> Result<(P
                 }
             }
 
-            Err(anyhow!("rig '{name}' not found"))
+            Err(RigError::RigNotFound {
+                name: name.to_string(),
+            }
+            .into())
         }
         None => {
             // Walk up from start_dir
@@ -158,9 +163,7 @@ pub fn resolve_workspace_from(start_dir: &Path, name: Option<&str>) -> Result<(P
                 let manifest = Manifest::load(&ws_root)?;
                 Ok((ws_root, manifest))
             } else {
-                Err(anyhow!(
-                    "not inside a rig (no {MANIFEST} found in any parent directory)"
-                ))
+                Err(RigError::NotInWorkspace.into())
             }
         }
     }
