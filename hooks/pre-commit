@@ -1,7 +1,6 @@
 #!/bin/sh
 # Pre-commit hook: fast checks only (fmt + clippy)
-# Install with: just install-hooks
-
+# Auto-installed by build.rs on cargo build/test
 set -e
 
 echo "pre-commit: checking formatting..."

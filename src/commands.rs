@@ -49,16 +49,24 @@ pub fn create_from(start_dir: &Path, name: &str) -> Result<()> {
 // add
 // ---------------------------------------------------------------------------
 
-pub fn add(
-    ws_name: Option<&str>,
-    repo_path: &str,
-    name: Option<&str>,
-    branch: Option<&str>,
-    remote: Option<&str>,
-    detach: bool,
-    upstream: Option<&str>,
-    no_upstream: bool,
-) -> Result<()> {
+pub struct AddOptions<'a> {
+    pub name: Option<&'a str>,
+    pub branch: Option<&'a str>,
+    pub remote: Option<&'a str>,
+    pub detach: bool,
+    pub upstream: Option<&'a str>,
+    pub no_upstream: bool,
+}
+
+pub fn add(ws_name: Option<&str>, repo_path: &str, opts: AddOptions<'_>) -> Result<()> {
+    let AddOptions {
+        name,
+        branch,
+        remote,
+        detach,
+        upstream,
+        no_upstream,
+    } = opts;
     let (ws_dir, mut manifest) = workspace::resolve_workspace(ws_name)?;
 
     // Resolve the source repo path to absolute
@@ -516,8 +524,7 @@ pub fn status(name: Option<&str>) -> Result<()> {
         let branch = git::current_branch(&worktree_path).unwrap_or_else(|_| "(unknown)".into());
         let dirty = git::is_dirty(&worktree_path).unwrap_or(false);
         let effective = repo.effective_upstream();
-        let (ahead, behind) =
-            git::ahead_behind(&worktree_path, &branch, effective, &repo.remote);
+        let (ahead, behind) = git::ahead_behind(&worktree_path, &branch, effective, &repo.remote);
         let last = git::last_commit_summary(&worktree_path).unwrap_or_else(|_| "no commits".into());
 
         print!(" on {}", branch.cyan());

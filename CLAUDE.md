@@ -5,7 +5,7 @@ CLI tool for managing multi-repo workspaces using git worktrees.
 ## Build & Run
 
 ```bash
-just check                     # fmt + clippy + test (recommended)
+just check                     # fmt + clippy + deny + test (recommended)
 just test                      # run all tests
 just install                   # install to ~/.cargo/bin/git-rig
 cargo build                    # debug build
@@ -21,6 +21,10 @@ Single-binary Rust CLI. Five source files:
 - `src/workspace.rs` — Manifest types (`.rig.json`), workspace resolution from CWD
 - `src/git.rs` — Git operations (shells out to `git`, not libgit2)
 - `src/error.rs` — `RigError` enum (structured errors via `thiserror`)
+
+## Git Hooks
+
+A pre-commit hook is auto-installed into `.git/hooks/` on the first `cargo build`/`cargo test` via `build.rs`. The hook source lives in `hooks/pre-commit` and is embedded at compile time with `include_str!`. The build script skips installation in CI (`$CI` set) or non-git environments (no `.git/` directory). To pick up changes to `hooks/pre-commit`, delete `.git/hooks/pre-commit` and rebuild.
 
 ## Key Design Decisions
 

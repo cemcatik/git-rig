@@ -522,10 +522,7 @@ mod tests {
         let entry = m.find_repo_mut("repo-a");
         assert!(entry.is_some());
         entry.unwrap().upstream = Some("develop".to_string());
-        assert_eq!(
-            m.repos[0].upstream,
-            Some("develop".to_string())
-        );
+        assert_eq!(m.repos[0].upstream, Some("develop".to_string()));
     }
 
     #[test]

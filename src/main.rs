@@ -182,12 +182,14 @@ fn main() -> Result<()> {
             commands::add(
                 ws_name.as_deref(),
                 &repo_path,
-                name.as_deref(),
-                branch.as_deref(),
-                remote.as_deref(),
-                detach,
-                upstream.as_deref(),
-                no_upstream,
+                commands::AddOptions {
+                    name: name.as_deref(),
+                    branch: branch.as_deref(),
+                    remote: remote.as_deref(),
+                    detach,
+                    upstream: upstream.as_deref(),
+                    no_upstream,
+                },
             )
         }
         Commands::Remove {

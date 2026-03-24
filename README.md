@@ -197,6 +197,8 @@ just coverage                       # generate lcov coverage report
 just deny                           # license + advisory audit (requires cargo-deny)
 ```
 
+A pre-commit hook (`hooks/pre-commit`) is auto-installed into `.git/hooks/` on the first `cargo build` or `cargo test`. It runs `cargo fmt --check` and `cargo clippy` before each commit. To update the hook after changes to `hooks/pre-commit`, delete `.git/hooks/pre-commit` and rebuild.
+
 Tests create temporary git repos (bare remote + clone) per test case — no shared state, no CWD mutation.
 
 ## Releasing

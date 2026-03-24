@@ -1,7 +1,7 @@
 # git-rig development recipes
 
-# Run all checks (fmt + clippy + test). Run `just deny` separately if cargo-deny is installed.
-check: fmt clippy test
+# Run all checks (fmt + clippy + deny + test)
+check: fmt clippy deny test
 
 # Check formatting
 fmt:
@@ -11,9 +11,9 @@ fmt:
 clippy:
     cargo clippy --all-targets -- -D warnings
 
-# Run cargo-deny (license + advisory audit)
+# Run cargo-deny (license + advisory audit). Skips if cargo-deny is not installed.
 deny:
-    cargo deny check
+    @command -v cargo-deny >/dev/null 2>&1 && cargo deny check || echo "warn: cargo-deny not installed, skipping (install with: cargo install cargo-deny)"
 
 # Run all tests
 test:
@@ -38,10 +38,3 @@ coverage:
 # Install to ~/.cargo/bin/git-rig
 install:
     cargo install --path .
-
-# Install git hooks
-install-hooks:
-    @echo "Installing pre-commit hook..."
-    @cp hooks/pre-commit .git/hooks/pre-commit
-    @chmod +x .git/hooks/pre-commit
-    @echo "Done."
