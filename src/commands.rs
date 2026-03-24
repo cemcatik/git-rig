@@ -118,7 +118,10 @@ pub fn add(
 
     let default_branch = git::default_branch(&source_dir, remote)?;
     let worktree_path = manifest.worktree_dir(&ws_dir, &repo_name);
-    let start_point = format!("{remote}/{default_branch}");
+    // When --upstream is set, start the worktree from the upstream branch
+    // so that git tracking and git log show the correct remote ref.
+    let effective_start = upstream.unwrap_or(&default_branch);
+    let start_point = format!("{remote}/{effective_start}");
 
     // If the worktree directory already exists (e.g., from a previous interrupted add),
     // skip worktree creation to make the operation retryable.
@@ -174,7 +177,7 @@ pub fn add(
             println!(
                 "  Creating worktree (new branch {} from {})...",
                 branch_name.cyan(),
-                default_branch.dimmed()
+                effective_start.dimmed()
             );
             git::worktree_add_new_branch(&source_dir, &worktree_path, &branch_name, &start_point)
                 .with_context(branch_hint)?;

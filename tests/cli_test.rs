@@ -179,6 +179,12 @@ fn add_with_upstream() {
     let repo_path = sandbox.create_repo("repo-a");
     let ws_dir = sandbox.create_workspace("my-ws");
 
+    // Create the upstream branch on the remote
+    common::git(&repo_path, &["checkout", "-b", "integration"]);
+    sandbox.commit_file("repo-a", "integration.txt", "new", "integration commit");
+    common::git(&repo_path, &["push", "-u", "origin", "integration"]);
+    common::git(&repo_path, &["checkout", "main"]);
+
     Command::cargo_bin("git-rig")
         .unwrap()
         .args(["add", "--upstream", "integration"])
@@ -186,11 +192,15 @@ fn add_with_upstream() {
         .current_dir(&ws_dir)
         .assert()
         .success()
-        .stdout(predicate::str::contains("ok"));
+        .stdout(predicate::str::contains("ok"))
+        .stdout(predicate::str::contains("from integration"));
 
     // Verify upstream is stored in manifest
     let raw = std::fs::read_to_string(ws_dir.join(".rig.json")).unwrap();
     assert!(raw.contains(r#""upstream": "integration""#));
+
+    // Verify worktree starts at the upstream branch's content
+    assert!(ws_dir.join("repo-a").join("integration.txt").exists());
 }
 
 #[test]
@@ -232,6 +242,12 @@ fn add_no_upstream_clears_existing() {
     let sandbox = common::TestSandbox::new();
     let repo_path = sandbox.create_repo("repo-a");
     let ws_dir = sandbox.create_workspace("my-ws");
+
+    // Create the upstream branch on the remote
+    common::git(&repo_path, &["checkout", "-b", "integration"]);
+    sandbox.commit_file("repo-a", "integration.txt", "new", "integration commit");
+    common::git(&repo_path, &["push", "-u", "origin", "integration"]);
+    common::git(&repo_path, &["checkout", "main"]);
 
     // Add with upstream
     Command::cargo_bin("git-rig")
