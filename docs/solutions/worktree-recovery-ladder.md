@@ -73,34 +73,42 @@ because it cleans up git's internal state on a best-effort basis.
 
 ## Where It Appears
 
-The pattern is implemented in two places:
+The pattern is implemented as a shared helper function:
 
-- **`commands::remove()`** (`src/commands.rs:190-206`) — uses `if/else` chain
-  with explicit WARN messages at each escalation step.
-- **`commands::destroy()`** (`src/commands.rs:341-352`) — uses `or_else` chain
-  for a more compact expression since destroy processes multiple repos.
+- **`remove_worktree_with_recovery()`** (`src/commands.rs`) — encodes the
+  3-rung ladder. Called by both `remove()` and `destroy()`.
 
-Both share the same escalation logic but `remove()` also checks for a missing
-source repo (an additional failure mode where the original clone directory was
-deleted).
+Both `remove()` and `destroy()` delegate to this helper. `remove()` also
+checks for a missing source repo before calling the helper.
 
 ## Additional Failure Mode: Missing Source Repo
 
 If `entry.source` no longer exists (the original cloned repo was deleted),
-there's no git repo to run worktree commands against. In this case, we skip
-the git worktree ladder entirely and go straight to `rm -rf` on the worktree
-directory. This is handled in `remove()` at `src/commands.rs:208-215`.
+there's no git repo to run worktree commands against. In this case, `remove()`
+skips the recovery ladder entirely and goes straight to `rm -rf` on the
+worktree directory.
 
 ## Testing
 
-The recovery ladder is exercised by integration tests in `tests/cli_test.rs`
-for the basic remove and destroy paths. The moved-worktree and corrupted-link
-scenarios are harder to test because they require simulating filesystem-level
-changes that break git's internal tracking.
+The recovery ladder is exercised by E2E tests in `tests/cli_test.rs`:
+
+- `remove_after_workspace_moved` — exercises rung 2 (repair succeeds)
+- `remove_after_workspace_moved_with_force` — rung 2 with dirty worktree
+- `remove_with_corrupted_worktree_metadata` — exercises rung 3 (rm + prune)
+- `destroy_after_workspace_moved` — exercises rung 2 for destroy
+
+The `TestSandbox::move_workspace()` and `corrupt_worktree_metadata()` helpers
+simulate the filesystem conditions that trigger recovery.
 
 ## Commit Context
 
 This pattern was formalized in commit `f076dc8` ("fix: recover from moved
-worktree directories on remove and destroy"). Prior to this, a moved worktree
-would leave git-rig unable to clean up, requiring manual `git worktree prune`
-and `rm -rf`.
+worktree directories on remove and destroy"). The rung 3 ordering was corrected
+in commit `edda116` (rm before prune), and the logic was extracted into
+`remove_worktree_with_recovery()` in commit `cd6a647`.
+
+## Related
+
+- [Worktree prune ordering bug](worktree-prune-ordering-bug.md) — documents
+  the ordering bug, its root cause, and the general pattern of
+  precondition-dependent ordering bugs.
