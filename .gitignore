@@ -5,3 +5,6 @@ target/
 # Dolt database files (added by bd init)
 .dolt/
 *.db
+
+# Beads / Dolt files (added by bd init)
+.beads-credential-key
