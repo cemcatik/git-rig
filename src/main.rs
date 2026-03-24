@@ -50,6 +50,14 @@ enum Commands {
         /// Add as detached HEAD (read-only reference)
         #[arg(long)]
         detach: bool,
+
+        /// Remote branch to sync against (default: repo's default branch)
+        #[arg(long, conflicts_with = "detach")]
+        upstream: Option<String>,
+
+        /// Clear a previously set upstream branch
+        #[arg(long, conflicts_with_all = ["detach", "upstream"])]
+        no_upstream: bool,
     },
 
     /// Remove a repository worktree from a rig
@@ -167,6 +175,8 @@ fn main() -> Result<()> {
             branch,
             remote,
             detach,
+            upstream,
+            no_upstream,
         } => {
             let (ws_name, repo_path) = split_ws_and_arg(first, second);
             commands::add(
@@ -176,6 +186,8 @@ fn main() -> Result<()> {
                 branch.as_deref(),
                 remote.as_deref(),
                 detach,
+                upstream.as_deref(),
+                no_upstream,
             )
         }
         Commands::Remove {

@@ -56,6 +56,8 @@ pub fn add(
     branch: Option<&str>,
     remote: Option<&str>,
     detach: bool,
+    upstream: Option<&str>,
+    no_upstream: bool,
 ) -> Result<()> {
     let (ws_dir, mut manifest) = workspace::resolve_workspace(ws_name)?;
 
@@ -74,6 +76,28 @@ pub fn add(
         .ok_or_else(|| anyhow!("cannot determine repo name from path — use --name"))?;
 
     if manifest.has_repo(&repo_name) {
+        if upstream.is_some() || no_upstream {
+            let entry = manifest.find_repo_mut(&repo_name).unwrap();
+            if no_upstream {
+                entry.upstream = None;
+                println!(
+                    "{} Cleared upstream for '{}'",
+                    "ok".green(),
+                    repo_name.bold()
+                );
+            } else {
+                let branch = upstream.unwrap().to_string();
+                println!(
+                    "{} Set upstream for '{}' to {}",
+                    "ok".green(),
+                    repo_name.bold(),
+                    branch.cyan()
+                );
+                entry.upstream = Some(branch);
+            }
+            manifest.save(&ws_dir)?;
+            return Ok(());
+        }
         return Err(RigError::RepoAlreadyInRig {
             repo: repo_name,
             rig: manifest.name.clone(),
@@ -165,6 +189,7 @@ pub fn add(
         branch: recorded_branch,
         default_branch,
         remote: remote.to_string(),
+        upstream: upstream.map(str::to_string),
     });
     manifest.save(&ws_dir)?;
 
@@ -444,7 +469,17 @@ pub fn list() -> Result<()> {
     for ws in &workspaces {
         println!("  {} ({} repos)", ws.name.bold(), ws.repos.len());
         for repo in &ws.repos {
-            println!("    {} on {}", repo.name, repo.branch.cyan());
+            if let Some(ref upstream) = repo.upstream {
+                println!(
+                    "    {} on {} {} {}",
+                    repo.name,
+                    repo.branch.cyan(),
+                    "->".dimmed(),
+                    upstream.cyan()
+                );
+            } else {
+                println!("    {} on {}", repo.name, repo.branch.cyan());
+            }
         }
     }
 
@@ -477,8 +512,9 @@ pub fn status(name: Option<&str>) -> Result<()> {
 
         let branch = git::current_branch(&worktree_path).unwrap_or_else(|_| "(unknown)".into());
         let dirty = git::is_dirty(&worktree_path).unwrap_or(false);
+        let effective = repo.effective_upstream();
         let (ahead, behind) =
-            git::ahead_behind(&worktree_path, &branch, &repo.default_branch, &repo.remote);
+            git::ahead_behind(&worktree_path, &branch, effective, &repo.remote);
         let last = git::last_commit_summary(&worktree_path).unwrap_or_else(|_| "no commits".into());
 
         print!(" on {}", branch.cyan());
@@ -490,6 +526,9 @@ pub fn status(name: Option<&str>) -> Result<()> {
         }
         if behind > 0 {
             print!(" {}", format!("-{behind}").red());
+        }
+        if repo.upstream.is_some() {
+            print!(" {}", format!("(vs {effective})").dimmed());
         }
         println!();
 
@@ -616,13 +655,14 @@ pub fn sync(name: Option<&str>, stash: bool) -> Result<()> {
             continue;
         }
 
-        // Rebase worktree branch onto origin/<default>
-        if git::rebase(&worktree_path, &repo.default_branch, &repo.remote).is_ok() {
+        // Rebase worktree branch onto remote/<upstream>
+        let effective = repo.effective_upstream();
+        if git::rebase(&worktree_path, effective, &repo.remote).is_ok() {
             let after = git::rev_parse_short(&worktree_path, "HEAD").unwrap_or_default();
             let current =
                 git::current_branch(&worktree_path).unwrap_or_else(|_| repo.branch.clone());
             let (_ahead, behind) =
-                git::ahead_behind(&worktree_path, &current, &repo.default_branch, &repo.remote);
+                git::ahead_behind(&worktree_path, &current, effective, &repo.remote);
 
             let moved = if before == after {
                 "already up to date".dimmed().to_string()
@@ -636,14 +676,21 @@ pub fn sync(name: Option<&str>, stash: bool) -> Result<()> {
                 String::new()
             };
 
+            let upstream_info = if repo.upstream.is_some() {
+                format!(" {}", format!("(upstream: {effective})").dimmed())
+            } else {
+                String::new()
+            };
+
             if stashed {
                 match git::stash_pop(&worktree_path) {
                     Ok(()) => println!(
-                        "  {} {} {}{} (stash restored)",
+                        "  {} {} {}{}{} (stash restored)",
                         "ok".green(),
                         repo.name.bold(),
                         moved,
-                        behind_info
+                        behind_info,
+                        upstream_info
                     ),
                     Err(e) => println!(
                         "  {} {} {} (stash pop failed: {e})",
@@ -654,11 +701,12 @@ pub fn sync(name: Option<&str>, stash: bool) -> Result<()> {
                 }
             } else {
                 println!(
-                    "  {} {} {}{}",
+                    "  {} {} {}{}{}",
                     "ok".green(),
                     repo.name.bold(),
                     moved,
-                    behind_info
+                    behind_info,
+                    upstream_info
                 );
             }
         } else {

@@ -26,6 +26,16 @@ pub struct RepoEntry {
     /// Remote to fetch from (default: "origin")
     #[serde(default = "default_remote")]
     pub remote: String,
+    /// Remote branch to rebase onto during sync. When None, uses default_branch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upstream: Option<String>,
+}
+
+impl RepoEntry {
+    /// The branch that sync/status should compare against.
+    pub fn effective_upstream(&self) -> &str {
+        self.upstream.as_deref().unwrap_or(&self.default_branch)
+    }
 }
 
 fn default_remote() -> String {
@@ -97,6 +107,10 @@ impl Manifest {
 
     pub fn find_repo(&self, name: &str) -> Option<&RepoEntry> {
         self.repos.iter().find(|r| r.name == name)
+    }
+
+    pub fn find_repo_mut(&mut self, name: &str) -> Option<&mut RepoEntry> {
+        self.repos.iter_mut().find(|r| r.name == name)
     }
 
     pub fn has_repo(&self, name: &str) -> bool {
@@ -218,6 +232,7 @@ mod tests {
             branch: "rig/test".to_string(),
             default_branch: "main".to_string(),
             remote: "origin".to_string(),
+            upstream: None,
         }
     }
 
@@ -317,6 +332,7 @@ mod tests {
             branch: "rig/my-ws".to_string(),
             default_branch: "main".to_string(),
             remote: "origin".to_string(),
+            upstream: None,
         });
         m.save(&ws_dir).unwrap();
 
@@ -329,6 +345,7 @@ mod tests {
         assert_eq!(r.branch, "rig/my-ws");
         assert_eq!(r.default_branch, "main");
         assert_eq!(r.remote, "origin");
+        assert_eq!(r.upstream, None);
     }
 
     #[test]
@@ -419,11 +436,102 @@ mod tests {
             branch: "rig/my-ws".to_string(),
             default_branch: "main".to_string(),
             remote: "upstream".to_string(),
+            upstream: None,
         });
         m.save(&ws_dir).unwrap();
 
         let loaded = Manifest::load(&ws_dir).unwrap();
         assert_eq!(loaded.repos[0].remote, "upstream");
+    }
+
+    #[test]
+    fn serde_upstream_defaults_to_none_when_missing() {
+        let tmp = TempDir::new().unwrap();
+        let ws_dir = tmp.path().canonicalize().unwrap();
+
+        let json = serde_json::json!({
+            "name": "my-ws",
+            "repos": [{
+                "name": "repo-a",
+                "source": "/src/repo-a",
+                "branch": "rig/my-ws",
+                "default_branch": "main"
+                // no "upstream" field
+            }]
+        });
+        std::fs::write(
+            ws_dir.join(".rig.json"),
+            serde_json::to_string_pretty(&json).unwrap(),
+        )
+        .unwrap();
+
+        let loaded = Manifest::load(&ws_dir).unwrap();
+        assert_eq!(loaded.repos[0].upstream, None);
+    }
+
+    #[test]
+    fn serde_custom_upstream_preserved() {
+        let tmp = TempDir::new().unwrap();
+        let ws_dir = tmp.path().canonicalize().unwrap();
+
+        let mut m = Manifest::new("my-ws");
+        m.add_repo(RepoEntry {
+            name: "repo-a".to_string(),
+            source: PathBuf::from("/src/repo-a"),
+            branch: "rig/my-ws".to_string(),
+            default_branch: "main".to_string(),
+            remote: "origin".to_string(),
+            upstream: Some("integration".to_string()),
+        });
+        m.save(&ws_dir).unwrap();
+
+        let loaded = Manifest::load(&ws_dir).unwrap();
+        assert_eq!(loaded.repos[0].upstream, Some("integration".to_string()));
+    }
+
+    #[test]
+    fn serde_upstream_omitted_from_json_when_none() {
+        let tmp = TempDir::new().unwrap();
+        let ws_dir = tmp.path().canonicalize().unwrap();
+
+        let mut m = Manifest::new("my-ws");
+        m.add_repo(make_repo_entry("repo-a"));
+        m.save(&ws_dir).unwrap();
+
+        let raw = std::fs::read_to_string(ws_dir.join(".rig.json")).unwrap();
+        assert!(!raw.contains("upstream"));
+    }
+
+    #[test]
+    fn effective_upstream_returns_default_branch_when_none() {
+        let entry = make_repo_entry("repo-a");
+        assert_eq!(entry.effective_upstream(), "main");
+    }
+
+    #[test]
+    fn effective_upstream_returns_custom_when_set() {
+        let mut entry = make_repo_entry("repo-a");
+        entry.upstream = Some("integration".to_string());
+        assert_eq!(entry.effective_upstream(), "integration");
+    }
+
+    #[test]
+    fn find_repo_mut_found() {
+        let mut m = Manifest::new("ws");
+        m.add_repo(make_repo_entry("repo-a"));
+        let entry = m.find_repo_mut("repo-a");
+        assert!(entry.is_some());
+        entry.unwrap().upstream = Some("develop".to_string());
+        assert_eq!(
+            m.repos[0].upstream,
+            Some("develop".to_string())
+        );
+    }
+
+    #[test]
+    fn find_repo_mut_not_found() {
+        let mut m = Manifest::new("ws");
+        assert!(m.find_repo_mut("nonexistent").is_none());
     }
 
     // -----------------------------------------------------------------------

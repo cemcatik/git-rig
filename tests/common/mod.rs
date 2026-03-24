@@ -99,6 +99,7 @@ impl TestSandbox {
                 branch: branch.clone(),
                 default_branch: "main".to_string(),
                 remote: "origin".to_string(),
+                upstream: None,
             });
         }
 

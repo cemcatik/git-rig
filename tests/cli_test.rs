@@ -173,6 +173,131 @@ fn add_not_a_repo() {
         .stderr(predicate::str::contains("not a git repository"));
 }
 
+#[test]
+fn add_with_upstream() {
+    let sandbox = common::TestSandbox::new();
+    let repo_path = sandbox.create_repo("repo-a");
+    let ws_dir = sandbox.create_workspace("my-ws");
+
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .args(["add", "--upstream", "integration"])
+        .arg(repo_path.to_str().unwrap())
+        .current_dir(&ws_dir)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("ok"));
+
+    // Verify upstream is stored in manifest
+    let raw = std::fs::read_to_string(ws_dir.join(".rig.json")).unwrap();
+    assert!(raw.contains(r#""upstream": "integration""#));
+}
+
+#[test]
+fn add_upstream_update_existing_repo() {
+    let sandbox = common::TestSandbox::new();
+    let repo_path = sandbox.create_repo("repo-a");
+    let ws_dir = sandbox.create_workspace("my-ws");
+
+    // First add without upstream
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .arg("add")
+        .arg(repo_path.to_str().unwrap())
+        .current_dir(&ws_dir)
+        .assert()
+        .success();
+
+    // Verify no upstream in manifest
+    let raw = std::fs::read_to_string(ws_dir.join(".rig.json")).unwrap();
+    assert!(!raw.contains("upstream"));
+
+    // Update with --upstream
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .args(["add", "--upstream", "integration"])
+        .arg(repo_path.to_str().unwrap())
+        .current_dir(&ws_dir)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Set upstream"));
+
+    // Verify upstream is now stored
+    let raw = std::fs::read_to_string(ws_dir.join(".rig.json")).unwrap();
+    assert!(raw.contains(r#""upstream": "integration""#));
+}
+
+#[test]
+fn add_no_upstream_clears_existing() {
+    let sandbox = common::TestSandbox::new();
+    let repo_path = sandbox.create_repo("repo-a");
+    let ws_dir = sandbox.create_workspace("my-ws");
+
+    // Add with upstream
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .args(["add", "--upstream", "integration"])
+        .arg(repo_path.to_str().unwrap())
+        .current_dir(&ws_dir)
+        .assert()
+        .success();
+
+    // Clear with --no-upstream
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .args(["add", "--no-upstream"])
+        .arg(repo_path.to_str().unwrap())
+        .current_dir(&ws_dir)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Cleared upstream"));
+
+    // Verify upstream is gone
+    let raw = std::fs::read_to_string(ws_dir.join(".rig.json")).unwrap();
+    assert!(!raw.contains("upstream"));
+}
+
+#[test]
+fn add_duplicate_without_upstream_still_errors() {
+    let sandbox = common::TestSandbox::new();
+    let repo_path = sandbox.create_repo("repo-a");
+    let ws_dir = sandbox.create_workspace("my-ws");
+
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .arg("add")
+        .arg(repo_path.to_str().unwrap())
+        .current_dir(&ws_dir)
+        .assert()
+        .success();
+
+    // Re-add without --upstream should still error
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .arg("add")
+        .arg(repo_path.to_str().unwrap())
+        .current_dir(&ws_dir)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("already in rig"));
+}
+
+#[test]
+fn add_upstream_conflicts_with_detach() {
+    let sandbox = common::TestSandbox::new();
+    let repo_path = sandbox.create_repo("repo-a");
+    let ws_dir = sandbox.create_workspace("my-ws");
+
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .args(["add", "--upstream", "integration", "--detach"])
+        .arg(repo_path.to_str().unwrap())
+        .current_dir(&ws_dir)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("cannot be used with"));
+}
+
 // ---------------------------------------------------------------------------
 // remove
 // ---------------------------------------------------------------------------
@@ -661,6 +786,116 @@ fn sync_fast_forward() {
         .assert()
         .success()
         .stdout(predicate::str::contains("->")); // hash transition
+}
+
+#[test]
+fn sync_with_custom_upstream() {
+    let sandbox = common::TestSandbox::new();
+    let ws_dir = sandbox.create_workspace_with_repos("my-ws", &["repo-a"]);
+    let repo_dir = sandbox.path().join("repo-a");
+
+    // Create an 'integration' branch on the remote with a new commit
+    common::git(&repo_dir, &["checkout", "-b", "integration"]);
+    sandbox.commit_file("repo-a", "integration.txt", "new", "integration commit");
+    common::git(&repo_dir, &["push", "-u", "origin", "integration"]);
+    common::git(&repo_dir, &["checkout", "main"]);
+
+    // Set upstream to 'integration'
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .args(["add", "--upstream", "integration"])
+        .arg(repo_dir.to_str().unwrap())
+        .current_dir(&ws_dir)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Set upstream"));
+
+    // Sync should rebase onto origin/integration
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .arg("sync")
+        .current_dir(&ws_dir)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("upstream: integration"));
+}
+
+#[test]
+fn status_shows_upstream_indicator() {
+    let sandbox = common::TestSandbox::new();
+    let ws_dir = sandbox.create_workspace_with_repos("my-ws", &["repo-a"]);
+    let repo_dir = sandbox.path().join("repo-a");
+
+    // Set upstream to 'integration'
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .args(["add", "--upstream", "integration"])
+        .arg(repo_dir.to_str().unwrap())
+        .current_dir(&ws_dir)
+        .assert()
+        .success();
+
+    // Status should show "(vs integration)"
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .arg("status")
+        .current_dir(&ws_dir)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("vs integration"));
+}
+
+#[test]
+fn list_shows_upstream_when_set() {
+    let sandbox = common::TestSandbox::new();
+    let ws_dir = sandbox.create_workspace_with_repos("my-ws", &["repo-a"]);
+    let repo_dir = sandbox.path().join("repo-a");
+
+    // Set upstream
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .args(["add", "--upstream", "integration"])
+        .arg(repo_dir.to_str().unwrap())
+        .current_dir(&ws_dir)
+        .assert()
+        .success();
+
+    // List should show the upstream arrow
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .arg("list")
+        .current_dir(&ws_dir)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("integration"));
+}
+
+#[test]
+fn refresh_does_not_modify_upstream() {
+    let sandbox = common::TestSandbox::new();
+    let ws_dir = sandbox.create_workspace_with_repos("my-ws", &["repo-a"]);
+    let repo_dir = sandbox.path().join("repo-a");
+
+    // Set upstream
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .args(["add", "--upstream", "integration"])
+        .arg(repo_dir.to_str().unwrap())
+        .current_dir(&ws_dir)
+        .assert()
+        .success();
+
+    // Run refresh
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .arg("refresh")
+        .current_dir(&ws_dir)
+        .assert()
+        .success();
+
+    // Verify upstream is preserved
+    let raw = std::fs::read_to_string(ws_dir.join(".rig.json")).unwrap();
+    assert!(raw.contains(r#""upstream": "integration""#));
 }
 
 // ---------------------------------------------------------------------------
