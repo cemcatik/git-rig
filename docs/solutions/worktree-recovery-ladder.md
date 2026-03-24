@@ -47,18 +47,20 @@ git worktree remove [--force] <path>
 `.git/worktrees/<name>/gitdir` and the worktree's `.git` file. This fixes the
 common case where the worktree directory was moved but still exists.
 
-### Rung 3: Prune + Filesystem Remove
+### Rung 3: Filesystem Remove + Prune
 
 ```
-git worktree prune
 rm -rf <path>
+git worktree prune
 ```
 
 Nuclear option. When repair fails (the worktree state is too corrupted for git
-to understand), we prune all stale worktree entries from git's tracking and
-then remove the directory directly. The `prune` call is fire-and-forget
-(`let _ = ...`) because it cleans up git's internal state on a best-effort
-basis.
+to understand), we remove the directory first, then prune stale worktree
+entries from git's tracking. The ordering matters: `git worktree prune` only
+removes entries whose directory is already gone. If we pruned first, the
+directory would still exist and prune would be a no-op, leaving stale metadata
+that blocks branch deletion. The `prune` call is fire-and-forget (`let _ = ...`)
+because it cleans up git's internal state on a best-effort basis.
 
 ## Why This Order Matters
 

@@ -228,8 +228,8 @@ pub fn remove(ws_name: Option<&str>, repo: &str, force: bool, keep_branch: bool)
                         "  {} repair failed, pruning stale entries and removing directory...",
                         "WARN".yellow()
                     );
-                    let _ = git::worktree_prune(&entry.source);
                     std::fs::remove_dir_all(&worktree_path)?;
+                    let _ = git::worktree_prune(&entry.source);
                 }
             }
         } else {
@@ -380,10 +380,11 @@ pub fn destroy_from(
                         .and_then(|()| git::worktree_remove(&repo.source, &worktree_path, true))
                 })
                 .or_else(|_| {
-                    // Repair failed — prune stale entries and remove directory directly
+                    // Repair failed — remove directory first, then prune stale entries
+                    let result = std::fs::remove_dir_all(&worktree_path)
+                        .with_context(|| format!("failed to remove {}", worktree_path.display()));
                     let _ = git::worktree_prune(&repo.source);
-                    std::fs::remove_dir_all(&worktree_path)
-                        .with_context(|| format!("failed to remove {}", worktree_path.display()))
+                    result
                 });
             match remove_result {
                 Ok(()) => {
