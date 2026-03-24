@@ -87,7 +87,16 @@ no_upstream: bool,
 
 **File:** `src/commands.rs:52-178`
 
-When adding a **new** repo, pass the `upstream` value through to the `RepoEntry`:
+When adding a **new** repo with `--upstream`, two things change:
+
+1. The worktree `start_point` uses the upstream branch instead of the default branch, so git tracking and `git log` reference the upstream ref:
+
+```rust
+let effective_start = upstream.unwrap_or(&default_branch);
+let start_point = format!("{remote}/{effective_start}");
+```
+
+2. The `upstream` value is stored in the `RepoEntry`:
 
 ```rust
 manifest.add_repo(RepoEntry {
@@ -96,7 +105,7 @@ manifest.add_repo(RepoEntry {
     branch: recorded_branch,
     default_branch,
     remote: remote.to_string(),
-    upstream: upstream.map(str::to_string),  // NEW
+    upstream: upstream.map(str::to_string),
 });
 ```
 

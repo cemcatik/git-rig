@@ -56,4 +56,4 @@ Each test creates its own `TestSandbox` (temp dir) — no shared state, no CWD m
 - Git worktrees require that a branch is checked out in only one worktree at a time. If `git rig add` fails with "already checked out", the branch exists in another worktree.
 - `default_branch()` detection requires `origin/HEAD` to be set (done by `git clone`). For repos created with `git init`, run: `git remote set-head origin <branch>`.
 - `git rig destroy` force-removes worktrees (even dirty ones). `git rig remove` does not — it will fail on dirty worktrees.
-- `--upstream` sets the branch that `sync` rebases onto. The upstream branch is not validated at set time — if it doesn't exist on the remote, `sync` will fail with a git error at rebase time.
+- `--upstream` sets the branch that `sync` rebases onto **and** the starting point for the worktree. The worktree is created from `{remote}/{upstream}`, so git tracking and `git log` show the upstream ref. The upstream branch must exist on the remote at add time. If it's later deleted, `sync` will fail with a git error.

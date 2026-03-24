@@ -66,7 +66,7 @@ git rig add ../web-app --branch feature/PROJ-123             # specific branch
 git rig add ~/projects/infra/auth-service --remote upstream  # repo from a different directory
 git rig add ../api-server --detach                           # read-only, detached HEAD
 git rig add ../api-server --name api                         # custom name in rig
-git rig add ../api-server --upstream develop                 # sync against develop instead of default branch
+git rig add ../api-server --upstream develop                 # start from and sync against develop
 ```
 
 When outside a workspace, pass the workspace name first:
@@ -178,7 +178,7 @@ Each workspace is a directory containing a `.rig.json` manifest:
 ```
 
 - Each repo entry stores the absolute `source` path to the local git clone
-- `upstream` is optional — when set, `sync` rebases onto this branch instead of `default_branch`
+- `upstream` is optional — when set, the worktree starts from this branch and `sync` rebases onto it instead of `default_branch`
 - Repos can live anywhere on disk — they don't need to be siblings of the workspace
 - Worktrees are created inside the workspace directory
 - Commands that accept an optional workspace name (`add`, `remove`, `status`, `sync`, `refresh`, `exec`) auto-detect the workspace by walking up from CWD
@@ -212,5 +212,5 @@ This bumps the version in `Cargo.toml`, updates `Cargo.lock`, commits, tags, and
 - A git branch can only be checked out in one worktree at a time. If `git rig add` fails with "already checked out", the branch exists in another worktree.
 - Default branch detection requires `origin/HEAD` (or `<remote>/HEAD`) to be set. For repos not created via `git clone`, run: `git remote set-head origin --auto`
 - `git rig destroy` force-removes worktrees. `git rig remove` does not — it fails on dirty worktrees unless `--force` is passed.
-- `--upstream` sets the branch that `sync` rebases onto. It is not validated at set time — if the branch doesn't exist on the remote, `sync` will report an error.
+- `--upstream` sets the branch that the worktree starts from and that `sync` rebases onto. The upstream branch must exist on the remote at add time. Git tracking and `git log` will reference the upstream ref.
 - You can edit `.rig.json` directly to change remotes, branches, or other settings.

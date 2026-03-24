@@ -46,7 +46,7 @@ There was no per-repo mechanism to override which remote branch to sync against.
 
 ## Solution
 
-Added an optional `upstream` field to `RepoEntry` with a centralized fallback method. Four-point change:
+Added an optional `upstream` field to `RepoEntry` with a centralized fallback method. Five-point change:
 
 ### 1. Data model (`src/workspace.rs`)
 
@@ -96,7 +96,16 @@ if manifest.has_repo(&repo_name) {
 }
 ```
 
-### 4. Sync/status substitution
+### 4. Worktree start point (`src/commands.rs`)
+
+When `--upstream` is set, the worktree is created from `{remote}/{upstream}` instead of `{remote}/{default_branch}`. This ensures git tracking, `git log`, and shell prompts (e.g., starship) all reference the upstream branch:
+
+```rust
+let effective_start = upstream.unwrap_or(&default_branch);
+let start_point = format!("{remote}/{effective_start}");
+```
+
+### 5. Sync/status substitution
 
 All consumers replaced `&repo.default_branch` with `repo.effective_upstream()`.
 
@@ -108,6 +117,7 @@ All consumers replaced `&repo.default_branch` with `repo.effective_upstream()`.
 | `conflicts_with = "detach"` | Detached worktrees skip sync, so an upstream on them is nonsensical. Clap rejects at parse time. |
 | `effective_upstream()` method | Single place for fallback logic. All consumers call one method instead of inlining the Option unwrap. |
 | Reuse `add` for updates | Avoids subcommand proliferation. The `has_repo` guard already existed; the update path is a natural branch before the error. |
+| Worktree starts from upstream | When `--upstream` is set, `start_point` is `{remote}/{upstream}` so git tracking and prompts show the upstream ref, not the default branch. |
 | `--no-upstream` flag | Explicit way to clear back to default, rather than requiring `--upstream main` (fragile if default branch changes). |
 
 ## Verification
@@ -139,5 +149,5 @@ When adding a new optional per-repo field to the manifest:
 
 ## Known Limitations
 
-- **No upstream validation at set time**: the upstream branch is not checked against the remote when `--upstream` is passed. If it doesn't exist, `sync` will fail with a git error at rebase time. This was a deliberate design decision (see plan).
+- **Upstream must exist at add time**: the worktree is created from `{remote}/{upstream}`, so the branch must exist on the remote when `git rig add --upstream` is first called. If the branch is later deleted, `sync` will fail with a git error at rebase time.
 - **`ahead_behind()` silent failure**: if the upstream ref doesn't exist, `git::ahead_behind()` returns `(0, 0)` instead of an error. This is pre-existing behavior documented in `docs/solutions/git-rs-review-findings.md`.
