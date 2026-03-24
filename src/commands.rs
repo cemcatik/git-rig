@@ -123,7 +123,15 @@ pub fn add(
                 "  Creating worktree (existing branch {})...",
                 branch_name.cyan()
             );
-            git::worktree_add_existing(&source_dir, &worktree_path, &branch_name)?;
+            git::worktree_add_existing(&source_dir, &worktree_path, &branch_name).with_context(
+                || {
+                    format!(
+                        "branch '{}' may already be checked out in another worktree\n  \
+                         hint: use --branch to specify a different branch name",
+                        branch_name
+                    )
+                },
+            )?;
         } else if git::remote_branch_exists(&source_dir, &branch_name, remote) {
             println!(
                 "  Creating worktree (tracking {remote}/{})...",
@@ -134,14 +142,28 @@ pub fn add(
                 &worktree_path,
                 &branch_name,
                 &format!("{remote}/{branch_name}"),
-            )?;
+            )
+            .with_context(|| {
+                format!(
+                    "branch '{}' may already be checked out in another worktree\n  \
+                     hint: use --branch to specify a different branch name",
+                    branch_name
+                )
+            })?;
         } else {
             println!(
                 "  Creating worktree (new branch {} from {})...",
                 branch_name.cyan(),
                 default_branch.dimmed()
             );
-            git::worktree_add_new_branch(&source_dir, &worktree_path, &branch_name, &start_point)?;
+            git::worktree_add_new_branch(&source_dir, &worktree_path, &branch_name, &start_point)
+                .with_context(|| {
+                    format!(
+                        "failed to create worktree with branch '{}'\n  \
+                         hint: if this branch is checked out elsewhere, use --branch to pick a different name",
+                        branch_name
+                    )
+                })?;
         }
 
         branch_name
@@ -337,7 +359,12 @@ pub fn destroy_from(
         let worktree_path = manifest.worktree_dir(&ws_dir, &repo.name);
 
         if worktree_path.exists() {
-            print!("  Removing {}... ", repo.name.bold());
+            let dirty_warn = if git::is_dirty(&worktree_path).unwrap_or(false) {
+                format!(" {}", "[dirty — uncommitted changes will be lost]".yellow())
+            } else {
+                String::new()
+            };
+            print!("  Removing {}{}... ", repo.name.bold(), dirty_warn);
             let remove_result = git::worktree_remove(&repo.source, &worktree_path, true)
                 .or_else(|_| {
                     // Worktree may have been moved — try repair then remove

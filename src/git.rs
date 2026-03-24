@@ -71,7 +71,9 @@ pub fn default_branch(repo_dir: &Path, remote: &str) -> Result<String> {
     }
 
     Err(anyhow!(
-        "cannot determine default branch for {}",
+        "cannot determine default branch for {}\n  \
+         hint: run `git remote set-head {remote} <branch>` in the source repo\n  \
+         hint: this is set automatically by `git clone` but not by `git init`",
         repo_dir.display()
     ))
 }
