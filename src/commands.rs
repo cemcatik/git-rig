@@ -119,20 +119,21 @@ pub fn add(
     } else {
         let branch_name = branch.map_or_else(|| format!("rig/{}", manifest.name), str::to_string);
 
+        let branch_hint = || {
+            format!(
+                "branch '{}' may already be checked out in another worktree\n  \
+                 hint: use --branch to specify a different branch name",
+                branch_name
+            )
+        };
+
         if git::branch_exists(&source_dir, &branch_name) {
             println!(
                 "  Creating worktree (existing branch {})...",
                 branch_name.cyan()
             );
-            git::worktree_add_existing(&source_dir, &worktree_path, &branch_name).with_context(
-                || {
-                    format!(
-                        "branch '{}' may already be checked out in another worktree\n  \
-                         hint: use --branch to specify a different branch name",
-                        branch_name
-                    )
-                },
-            )?;
+            git::worktree_add_existing(&source_dir, &worktree_path, &branch_name)
+                .with_context(branch_hint)?;
         } else if git::remote_branch_exists(&source_dir, &branch_name, remote) {
             println!(
                 "  Creating worktree (tracking {remote}/{})...",
@@ -144,13 +145,7 @@ pub fn add(
                 &branch_name,
                 &format!("{remote}/{branch_name}"),
             )
-            .with_context(|| {
-                format!(
-                    "branch '{}' may already be checked out in another worktree\n  \
-                     hint: use --branch to specify a different branch name",
-                    branch_name
-                )
-            })?;
+            .with_context(branch_hint)?;
         } else {
             println!(
                 "  Creating worktree (new branch {} from {})...",
@@ -158,13 +153,7 @@ pub fn add(
                 default_branch.dimmed()
             );
             git::worktree_add_new_branch(&source_dir, &worktree_path, &branch_name, &start_point)
-                .with_context(|| {
-                    format!(
-                        "failed to create worktree with branch '{}'\n  \
-                         hint: if this branch is checked out elsewhere, use --branch to pick a different name",
-                        branch_name
-                    )
-                })?;
+                .with_context(branch_hint)?;
         }
 
         branch_name
@@ -185,6 +174,49 @@ pub fn add(
         repo_name.bold(),
         manifest.name
     );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// worktree recovery helper
+// ---------------------------------------------------------------------------
+
+/// Remove a worktree with a 3-step recovery ladder:
+/// 1. Try `git worktree remove [--force]`
+/// 2. Try `git worktree repair` then retry remove
+/// 3. Remove directory directly, then prune stale entries
+///
+/// The ordering in step 3 matters: `git worktree prune` only removes entries
+/// whose directory is already gone, so we must delete the directory first.
+fn remove_worktree_with_recovery(
+    source_repo: &Path,
+    worktree_path: &Path,
+    force: bool,
+) -> Result<()> {
+    // Rung 1: normal remove
+    if git::worktree_remove(source_repo, worktree_path, force).is_ok() {
+        return Ok(());
+    }
+
+    // Rung 2: repair broken link, then retry
+    println!(
+        "  {} worktree not recognized, attempting repair...",
+        "WARN".yellow()
+    );
+    if git::worktree_repair(source_repo, worktree_path).is_ok()
+        && git::worktree_remove(source_repo, worktree_path, force).is_ok()
+    {
+        return Ok(());
+    }
+
+    // Rung 3: remove directory first, then prune stale metadata
+    println!(
+        "  {} repair failed, removing directory directly...",
+        "WARN".yellow()
+    );
+    std::fs::remove_dir_all(worktree_path)
+        .with_context(|| format!("failed to remove {}", worktree_path.display()))?;
+    let _ = git::worktree_prune(source_repo);
     Ok(())
 }
 
@@ -214,24 +246,7 @@ pub fn remove(ws_name: Option<&str>, repo: &str, force: bool, keep_branch: bool)
                 .into());
             }
             println!("  Removing worktree for {}...", repo.bold());
-            if git::worktree_remove(&entry.source, &worktree_path, force).is_err() {
-                // Worktree may have been moved — try repairing the link first
-                println!(
-                    "  {} worktree not recognized, attempting repair...",
-                    "WARN".yellow()
-                );
-                if git::worktree_repair(&entry.source, &worktree_path).is_ok() {
-                    git::worktree_remove(&entry.source, &worktree_path, force)?;
-                } else {
-                    // Repair failed — prune stale entries and remove directory directly
-                    println!(
-                        "  {} repair failed, pruning stale entries and removing directory...",
-                        "WARN".yellow()
-                    );
-                    std::fs::remove_dir_all(&worktree_path)?;
-                    let _ = git::worktree_prune(&entry.source);
-                }
-            }
+            remove_worktree_with_recovery(&entry.source, &worktree_path, force)?;
         } else {
             // Source repo is gone — skip git worktree remove, just clean up the directory
             println!(
@@ -373,19 +388,7 @@ pub fn destroy_from(
                 String::new()
             };
             print!("  Removing {}{}... ", repo.name.bold(), dirty_warn);
-            let remove_result = git::worktree_remove(&repo.source, &worktree_path, true)
-                .or_else(|_| {
-                    // Worktree may have been moved — try repair then remove
-                    git::worktree_repair(&repo.source, &worktree_path)
-                        .and_then(|()| git::worktree_remove(&repo.source, &worktree_path, true))
-                })
-                .or_else(|_| {
-                    // Repair failed — remove directory first, then prune stale entries
-                    let result = std::fs::remove_dir_all(&worktree_path)
-                        .with_context(|| format!("failed to remove {}", worktree_path.display()));
-                    let _ = git::worktree_prune(&repo.source);
-                    result
-                });
+            let remove_result = remove_worktree_with_recovery(&repo.source, &worktree_path, true);
             match remove_result {
                 Ok(()) => {
                     println!("{}", "ok".green());

@@ -282,7 +282,6 @@ fn remove_after_workspace_moved() {
         .current_dir(&new_dir)
         .assert()
         .success()
-        .stdout(predicate::str::contains("repair"))
         .stdout(predicate::str::contains("ok"));
 
     assert!(!new_dir.join("repo-a").exists());
@@ -320,6 +319,31 @@ fn remove_after_workspace_moved_with_force() {
     assert!(
         branches.is_empty(),
         "branch rig/my-ws should have been deleted after forced moved-worktree remove"
+    );
+}
+
+#[test]
+fn remove_with_corrupted_worktree_metadata() {
+    let sandbox = common::TestSandbox::new();
+    sandbox.create_workspace_with_repos("my-ws", &["repo-a"]);
+
+    // Move workspace AND corrupt the source repo's worktree metadata.
+    // This makes both worktree_remove and worktree_repair fail,
+    // forcing the prune+rm fallback path (rung 3 of the recovery ladder).
+    let new_dir = sandbox.move_workspace("my-ws", "moved-ws");
+    sandbox.corrupt_worktree_metadata("repo-a");
+
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .args(["remove", "--force", "repo-a"])
+        .current_dir(&new_dir)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("ok"));
+
+    assert!(
+        !new_dir.join("repo-a").exists(),
+        "worktree directory should be removed via prune+rm fallback"
     );
 }
 

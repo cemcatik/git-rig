@@ -137,6 +137,16 @@ impl TestSandbox {
         new_dir
     }
 
+    /// Corrupt the worktree metadata in a source repo so that both
+    /// `git worktree remove` and `git worktree repair` fail.
+    /// This simulates a scenario where the worktree link is irrecoverable.
+    pub fn corrupt_worktree_metadata(&self, source_repo: &str) {
+        let worktrees_dir = self.path().join(source_repo).join(".git").join("worktrees");
+        if worktrees_dir.exists() {
+            std::fs::remove_dir_all(&worktrees_dir).expect("remove worktrees metadata");
+        }
+    }
+
     /// Run a git command in a directory within the sandbox, panic on failure.
     pub fn git(&self, dir_name: &str, args: &[&str]) -> String {
         let dir = self.path().join(dir_name);
