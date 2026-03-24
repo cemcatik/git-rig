@@ -1,0 +1,13 @@
+#!/bin/sh
+# Pre-commit hook: fast checks only (fmt + clippy)
+# Install with: just install-hooks
+
+set -e
+
+echo "pre-commit: checking formatting..."
+cargo fmt --check
+
+echo "pre-commit: running clippy..."
+cargo clippy --all-targets -- -D warnings
+
+echo "pre-commit: all checks passed."
