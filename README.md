@@ -66,12 +66,20 @@ git rig add ../web-app --branch feature/PROJ-123             # specific branch
 git rig add ~/projects/infra/auth-service --remote upstream  # repo from a different directory
 git rig add ../api-server --detach                           # read-only, detached HEAD
 git rig add ../api-server --name api                         # custom name in rig
+git rig add ../api-server --upstream develop                 # sync against develop instead of default branch
 ```
 
 When outside a workspace, pass the workspace name first:
 
 ```bash
 git rig add my-feature ../api-server
+```
+
+To change or clear the upstream for an existing repo, re-run `add`:
+
+```bash
+git rig add ../api-server --upstream integration   # change upstream
+git rig add ../api-server --no-upstream            # revert to default branch
 ```
 
 ### Check status
@@ -83,11 +91,13 @@ git rig status
 ```
 Workspace: my-feature (/Users/you/projects/my-feature)
 
-  api-server on rig/my-feature [dirty] +2 -5
+  api-server on rig/my-feature [dirty] +2 -5 (vs develop)
     last: a1b2c3d fix auth token refresh (2 hours ago)
   web-app on feature/PROJ-123
     last: d4e5f6a add tenant validation (3 days ago)
 ```
+
+Repos with a custom `--upstream` show `(vs <branch>)` to indicate what they sync against.
 
 ### Sync (fetch + rebase)
 
@@ -160,24 +170,31 @@ Each workspace is a directory containing a `.rig.json` manifest:
       "source": "/Users/you/projects/api-server",
       "branch": "rig/my-feature",
       "default_branch": "master",
-      "remote": "origin"
+      "remote": "origin",
+      "upstream": "develop"
     }
   ]
 }
 ```
 
 - Each repo entry stores the absolute `source` path to the local git clone
+- `upstream` is optional — when set, `sync` rebases onto this branch instead of `default_branch`
 - Repos can live anywhere on disk — they don't need to be siblings of the workspace
 - Worktrees are created inside the workspace directory
 - Commands that accept an optional workspace name (`add`, `remove`, `status`, `sync`, `refresh`, `exec`) auto-detect the workspace by walking up from CWD
 
-## Testing
+## Development
+
+Requires [just](https://github.com/casey/just) for task running:
 
 ```bash
-cargo test                          # all tests (89)
-cargo test --bin git-rig            # unit tests — manifest ops, workspace resolution
-cargo test --test git_test          # integration tests — git operations against real repos
-cargo test --test cli_test          # E2E tests — full CLI commands via assert_cmd
+just check                          # fmt + clippy + test (recommended before committing)
+just test                           # all tests
+just test-unit                      # unit tests — manifest ops, workspace resolution
+just test-integration               # integration tests — git operations against real repos
+just test-e2e                       # E2E tests — full CLI commands via assert_cmd
+just coverage                       # generate lcov coverage report
+just deny                           # license + advisory audit (requires cargo-deny)
 ```
 
 Tests create temporary git repos (bare remote + clone) per test case — no shared state, no CWD mutation.
@@ -195,4 +212,5 @@ This bumps the version in `Cargo.toml`, updates `Cargo.lock`, commits, tags, and
 - A git branch can only be checked out in one worktree at a time. If `git rig add` fails with "already checked out", the branch exists in another worktree.
 - Default branch detection requires `origin/HEAD` (or `<remote>/HEAD`) to be set. For repos not created via `git clone`, run: `git remote set-head origin --auto`
 - `git rig destroy` force-removes worktrees. `git rig remove` does not — it fails on dirty worktrees unless `--force` is passed.
+- `--upstream` sets the branch that `sync` rebases onto. It is not validated at set time — if the branch doesn't exist on the remote, `sync` will report an error.
 - You can edit `.rig.json` directly to change remotes, branches, or other settings.
