@@ -818,6 +818,9 @@ fn sync_with_custom_upstream() {
         .assert()
         .success()
         .stdout(predicate::str::contains("upstream: integration"));
+
+    // Verify the worktree actually has the integration branch's content
+    assert!(ws_dir.join("repo-a").join("integration.txt").exists());
 }
 
 #[test]
@@ -826,7 +829,13 @@ fn status_shows_upstream_indicator() {
     let ws_dir = sandbox.create_workspace_with_repos("my-ws", &["repo-a"]);
     let repo_dir = sandbox.path().join("repo-a");
 
-    // Set upstream to 'integration'
+    // Create 'integration' branch on remote with an extra commit so we're behind
+    common::git(&repo_dir, &["checkout", "-b", "integration"]);
+    sandbox.commit_file("repo-a", "integration.txt", "new", "integration commit");
+    common::git(&repo_dir, &["push", "-u", "origin", "integration"]);
+    common::git(&repo_dir, &["checkout", "main"]);
+
+    // Set upstream to 'integration' and fetch so the ref is available
     Command::cargo_bin("git-rig")
         .unwrap()
         .args(["add", "--upstream", "integration"])
@@ -835,14 +844,43 @@ fn status_shows_upstream_indicator() {
         .assert()
         .success();
 
-    // Status should show "(vs integration)"
+    // Fetch so the worktree knows about origin/integration
+    common::git(&ws_dir.join("repo-a"), &["fetch", "origin"]);
+
+    // Status should show "(vs integration)" and the behind count
     Command::cargo_bin("git-rig")
         .unwrap()
         .arg("status")
         .current_dir(&ws_dir)
         .assert()
         .success()
-        .stdout(predicate::str::contains("vs integration"));
+        .stdout(predicate::str::contains("vs integration"))
+        .stdout(predicate::str::contains("-1"));
+}
+
+#[test]
+fn sync_with_nonexistent_upstream_reports_error() {
+    let sandbox = common::TestSandbox::new();
+    let ws_dir = sandbox.create_workspace_with_repos("my-ws", &["repo-a"]);
+    let repo_dir = sandbox.path().join("repo-a");
+
+    // Set upstream to a branch that doesn't exist on the remote
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .args(["add", "--upstream", "nonexistent-branch"])
+        .arg(repo_dir.to_str().unwrap())
+        .current_dir(&ws_dir)
+        .assert()
+        .success();
+
+    // Sync should report an error for this repo
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .arg("sync")
+        .current_dir(&ws_dir)
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("ERR"));
 }
 
 #[test]

@@ -106,7 +106,7 @@ enum Commands {
         name: Option<String>,
     },
 
-    /// Fetch and rebase all repos onto their default branches
+    /// Fetch and rebase all repos onto their upstream branches
     Sync {
         /// Rig name (optional if inside a rig)
         name: Option<String>,
