@@ -265,6 +265,61 @@ fn remove_keep_branch() {
         .stdout(predicate::str::contains("Deleted branch").not());
 }
 
+#[test]
+fn remove_after_workspace_moved() {
+    let sandbox = common::TestSandbox::new();
+    sandbox.create_workspace_with_repos("my-ws", &["repo-a"]);
+
+    // Move the workspace directory, breaking git worktree links
+    let new_dir = sandbox.move_workspace("my-ws", "moved-ws");
+
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .args(["remove", "repo-a"])
+        .current_dir(&new_dir)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("repair"))
+        .stdout(predicate::str::contains("ok"));
+
+    assert!(!new_dir.join("repo-a").exists());
+
+    // Branch should be deleted from the source repo
+    let branches = sandbox.git("repo-a", &["branch", "--list", "rig/my-ws"]);
+    assert!(
+        branches.is_empty(),
+        "branch rig/my-ws should have been deleted after moved-worktree remove"
+    );
+}
+
+#[test]
+fn remove_after_workspace_moved_with_force() {
+    let sandbox = common::TestSandbox::new();
+    sandbox.create_workspace_with_repos("my-ws", &["repo-a"]);
+
+    let new_dir = sandbox.move_workspace("my-ws", "moved-ws");
+
+    // Make worktree dirty then force-remove
+    std::fs::write(new_dir.join("repo-a").join("dirty.txt"), "dirty").unwrap();
+
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .args(["remove", "--force", "repo-a"])
+        .current_dir(&new_dir)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("ok"));
+
+    assert!(!new_dir.join("repo-a").exists());
+
+    // Branch should be deleted from the source repo even with force + moved worktree
+    let branches = sandbox.git("repo-a", &["branch", "--list", "rig/my-ws"]);
+    assert!(
+        branches.is_empty(),
+        "branch rig/my-ws should have been deleted after forced moved-worktree remove"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // destroy
 // ---------------------------------------------------------------------------
@@ -390,6 +445,40 @@ fn destroy_keep_branches() {
     // Branch should still exist in source repo
     let branches = sandbox.git("repo-a", &["branch", "--list", "rig/my-ws"]);
     assert!(!branches.is_empty(), "branch rig/my-ws should still exist");
+}
+
+#[test]
+fn destroy_after_workspace_moved() {
+    let sandbox = common::TestSandbox::new();
+    sandbox.create_workspace_with_repos("my-ws", &["repo-a", "repo-b"]);
+
+    // Move the workspace, breaking worktree links
+    let new_dir = sandbox.move_workspace("my-ws", "moved-ws");
+
+    assert!(new_dir.join("repo-a").exists());
+    assert!(new_dir.join("repo-b").exists());
+
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .args(["destroy", "--yes", "moved-ws"])
+        .current_dir(sandbox.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("ok"));
+
+    assert!(!new_dir.exists());
+
+    // Branches should be deleted from source repos
+    let branches_a = sandbox.git("repo-a", &["branch", "--list", "rig/my-ws"]);
+    assert!(
+        branches_a.is_empty(),
+        "branch rig/my-ws should have been deleted from repo-a after moved-worktree destroy"
+    );
+    let branches_b = sandbox.git("repo-b", &["branch", "--list", "rig/my-ws"]);
+    assert!(
+        branches_b.is_empty(),
+        "branch rig/my-ws should have been deleted from repo-b after moved-worktree destroy"
+    );
 }
 
 #[test]

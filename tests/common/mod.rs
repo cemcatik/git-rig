@@ -126,6 +126,17 @@ impl TestSandbox {
         std::fs::write(&file_path, content).expect("write dirty file");
     }
 
+    /// Create a workspace with repos, then move it to a new location.
+    /// This breaks git worktree links (the source repo still points to the old path),
+    /// simulating a user reorganizing their directory structure.
+    /// Returns the new workspace directory path.
+    pub fn move_workspace(&self, old_name: &str, new_name: &str) -> PathBuf {
+        let old_dir = self.path().join(old_name);
+        let new_dir = self.path().join(new_name);
+        std::fs::rename(&old_dir, &new_dir).expect("move workspace directory");
+        new_dir
+    }
+
     /// Run a git command in a directory within the sandbox, panic on failure.
     pub fn git(&self, dir_name: &str, args: &[&str]) -> String {
         let dir = self.path().join(dir_name);

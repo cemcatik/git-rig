@@ -187,7 +187,24 @@ pub fn remove(ws_name: Option<&str>, repo: &str, force: bool, keep_branch: bool)
                 ));
             }
             println!("  Removing worktree for {}...", repo.bold());
-            git::worktree_remove(&entry.source, &worktree_path, force)?;
+            if git::worktree_remove(&entry.source, &worktree_path, force).is_err() {
+                // Worktree may have been moved — try repairing the link first
+                println!(
+                    "  {} worktree not recognized, attempting repair...",
+                    "WARN".yellow()
+                );
+                if git::worktree_repair(&entry.source, &worktree_path).is_ok() {
+                    git::worktree_remove(&entry.source, &worktree_path, force)?;
+                } else {
+                    // Repair failed — prune stale entries and remove directory directly
+                    println!(
+                        "  {} repair failed, pruning stale entries and removing directory...",
+                        "WARN".yellow()
+                    );
+                    let _ = git::worktree_prune(&entry.source);
+                    std::fs::remove_dir_all(&worktree_path)?;
+                }
+            }
         } else {
             // Source repo is gone — skip git worktree remove, just clean up the directory
             println!(
@@ -321,7 +338,19 @@ pub fn destroy_from(
 
         if worktree_path.exists() {
             print!("  Removing {}... ", repo.name.bold());
-            match git::worktree_remove(&repo.source, &worktree_path, true) {
+            let remove_result = git::worktree_remove(&repo.source, &worktree_path, true)
+                .or_else(|_| {
+                    // Worktree may have been moved — try repair then remove
+                    git::worktree_repair(&repo.source, &worktree_path)
+                        .and_then(|()| git::worktree_remove(&repo.source, &worktree_path, true))
+                })
+                .or_else(|_| {
+                    // Repair failed — prune stale entries and remove directory directly
+                    let _ = git::worktree_prune(&repo.source);
+                    std::fs::remove_dir_all(&worktree_path)
+                        .with_context(|| format!("failed to remove {}", worktree_path.display()))
+                });
+            match remove_result {
                 Ok(()) => {
                     println!("{}", "ok".green());
                     if !keep_branches && repo.branch != git::DETACHED {

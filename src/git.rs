@@ -165,6 +165,16 @@ pub fn worktree_remove(source_repo: &Path, worktree_path: &Path, force: bool) ->
     }
 }
 
+/// Repair worktree links after a worktree directory has been moved.
+pub fn worktree_repair(source_repo: &Path, worktree_path: &Path) -> Result<()> {
+    git_quiet(source_repo, &["worktree", "repair", path_str(worktree_path)?])
+}
+
+/// Prune stale worktree entries from the source repo.
+pub fn worktree_prune(source_repo: &Path) -> Result<()> {
+    git_quiet(source_repo, &["worktree", "prune"])
+}
+
 // ---------------------------------------------------------------------------
 // Status helpers
 // ---------------------------------------------------------------------------
