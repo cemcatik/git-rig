@@ -57,8 +57,7 @@ fn create_from_source(
     skip: bool,
 ) -> Result<()> {
     // Resolve source rig
-    let (_source_ws_dir, source_manifest) =
-        workspace::resolve_workspace_from(start_dir, Some(source_name))?;
+    let (_, source_manifest) = workspace::resolve_workspace_from(start_dir, Some(source_name))?;
 
     // Pre-validate: check all source repo paths exist and are git repos
     let mut valid_entries = Vec::new();
@@ -163,6 +162,7 @@ fn create_from_source(
         for (repo_name, err) in &errors {
             println!("  {} {}: {}", "ERR".red(), repo_name, err);
         }
+        return Err(anyhow!("{} repo(s) failed to clone", errors.len()));
     }
 
     Ok(())

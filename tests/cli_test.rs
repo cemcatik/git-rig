@@ -1361,3 +1361,112 @@ fn create_from_skip_requires_from() {
         .failure()
         .stderr(predicate::str::contains("--from"));
 }
+
+#[test]
+fn create_from_skip_all_invalid_fails() {
+    let sandbox = common::TestSandbox::new();
+    let ws_dir = sandbox.create_workspace("source-ws");
+
+    // Manifest with only invalid entries
+    std::fs::write(
+        ws_dir.join(".rig.json"),
+        serde_json::to_string_pretty(&serde_json::json!({
+            "name": "source-ws",
+            "repos": [
+                {
+                    "name": "gone-a",
+                    "source": "/nonexistent/a",
+                    "branch": "rig/source-ws",
+                    "default_branch": "main",
+                    "remote": "origin"
+                },
+                {
+                    "name": "gone-b",
+                    "source": "/nonexistent/b",
+                    "branch": "rig/source-ws",
+                    "default_branch": "main",
+                    "remote": "origin"
+                }
+            ]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .args(["create", "target-ws", "--from", "source-ws", "--skip"])
+        .current_dir(sandbox.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no valid repos"));
+
+    // Target should not have been created
+    assert!(!sandbox.path().join("target-ws").exists());
+}
+
+#[test]
+fn create_from_invalid_source_not_a_git_repo() {
+    let sandbox = common::TestSandbox::new();
+    let ws_dir = sandbox.create_workspace("source-ws");
+
+    // Create a real directory that is NOT a git repo
+    let not_git = sandbox.path().join("not-a-repo");
+    std::fs::create_dir_all(&not_git).unwrap();
+
+    std::fs::write(
+        ws_dir.join(".rig.json"),
+        serde_json::to_string_pretty(&serde_json::json!({
+            "name": "source-ws",
+            "repos": [{
+                "name": "not-a-repo",
+                "source": not_git.to_str().unwrap(),
+                "branch": "rig/source-ws",
+                "default_branch": "main",
+                "remote": "origin"
+            }]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .args(["create", "target-ws", "--from", "source-ws"])
+        .current_dir(sandbox.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not a git repository"));
+
+    assert!(!sandbox.path().join("target-ws").exists());
+}
+
+#[test]
+fn create_from_partial_runtime_failure() {
+    let sandbox = common::TestSandbox::new();
+    let _ws_dir = sandbox.create_workspace_with_repos("source-ws", &["repo-a", "repo-b"]);
+
+    // Check out rig/target-ws in repo-b's source clone so that
+    // worktree creation will fail with "already checked out"
+    let repo_b_dir = sandbox.path().join("repo-b");
+    common::git(&repo_b_dir, &["checkout", "-b", "rig/target-ws"]);
+
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .args(["create", "target-ws", "--from", "source-ws"])
+        .current_dir(sandbox.path())
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("ok repo-a"))
+        .stdout(predicate::str::contains("ERR"))
+        .stdout(predicate::str::contains("1 repos added, 1 failed"));
+
+    // repo-a should exist in target, repo-b should not
+    let target = sandbox.path().join("target-ws");
+    assert!(target.join("repo-a").exists());
+
+    // Manifest should contain repo-a but not repo-b
+    let raw = std::fs::read_to_string(target.join(".rig.json")).unwrap();
+    assert!(raw.contains("repo-a"));
+    assert!(!raw.contains("repo-b"));
+}
