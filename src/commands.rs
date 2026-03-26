@@ -13,16 +13,20 @@ use crate::workspace::{self, Manifest, RepoEntry};
 // create
 // ---------------------------------------------------------------------------
 
-pub fn create(name: &str) -> Result<()> {
+pub fn create(name: &str, from: Option<&str>, skip: bool) -> Result<()> {
     let cwd = std::env::current_dir()?;
-    create_from(&cwd, name)
+    create_from(&cwd, name, from, skip)
 }
 
-pub fn create_from(start_dir: &Path, name: &str) -> Result<()> {
+pub fn create_from(start_dir: &Path, name: &str, from: Option<&str>, skip: bool) -> Result<()> {
     let ws_dir = start_dir.join(name);
 
     if ws_dir.exists() {
         return Err(RigError::DirectoryAlreadyExists { path: ws_dir }.into());
+    }
+
+    if let Some(source_name) = from {
+        return create_from_source(start_dir, name, &ws_dir, source_name, skip);
     }
 
     std::fs::create_dir_all(&ws_dir)?;
@@ -41,6 +45,125 @@ pub fn create_from(start_dir: &Path, name: &str) -> Result<()> {
         format!("git rig add {name} <path>").dimmed(),
         "git rig add <path>".dimmed()
     );
+
+    Ok(())
+}
+
+fn create_from_source(
+    start_dir: &Path,
+    name: &str,
+    ws_dir: &Path,
+    source_name: &str,
+    skip: bool,
+) -> Result<()> {
+    // Resolve source rig
+    let (_source_ws_dir, source_manifest) =
+        workspace::resolve_workspace_from(start_dir, Some(source_name))?;
+
+    // Pre-validate: check all source repo paths exist and are git repos
+    let mut valid_entries = Vec::new();
+    let mut invalid_entries: Vec<(String, String)> = Vec::new();
+
+    for entry in &source_manifest.repos {
+        if !entry.source.exists() {
+            invalid_entries.push((
+                entry.name.clone(),
+                format!("source path not found: {}", entry.source.display()),
+            ));
+        } else if !git::is_git_repo(&entry.source) {
+            invalid_entries.push((
+                entry.name.clone(),
+                format!("not a git repository: {}", entry.source.display()),
+            ));
+        } else {
+            valid_entries.push(entry);
+        }
+    }
+
+    if !invalid_entries.is_empty() {
+        if skip {
+            for (repo_name, reason) in &invalid_entries {
+                println!(
+                    "  {} Skipping '{}': {}",
+                    "WARN".yellow(),
+                    repo_name.bold(),
+                    reason
+                );
+            }
+            if valid_entries.is_empty() {
+                return Err(anyhow!(
+                    "no valid repos to clone from rig '{source_name}' (all {} skipped)",
+                    invalid_entries.len()
+                ));
+            }
+        } else {
+            return Err(RigError::SourceReposInvalid {
+                errors: invalid_entries,
+            }
+            .into());
+        }
+    }
+
+    // Create the new rig directory + manifest
+    std::fs::create_dir_all(ws_dir)?;
+    let mut manifest = Manifest::new(name);
+    manifest.save(ws_dir)?;
+
+    println!(
+        "Cloning rig '{}' -> '{}' ({} repos)\n",
+        source_name.bold(),
+        name.bold(),
+        valid_entries.len()
+    );
+
+    // Add each repo from the source rig
+    let mut errors: Vec<(String, String)> = Vec::new();
+
+    for entry in &valid_entries {
+        let detach = entry.branch == git::DETACHED;
+        let result = add_repo_to_rig(
+            ws_dir,
+            &mut manifest,
+            &entry.source,
+            &entry.name,
+            None, // branch defaults to rig/<new-name>
+            &entry.remote,
+            entry.upstream.as_deref(),
+            detach,
+        );
+
+        match result {
+            Ok(()) => println!("  {} {}", "ok".green(), entry.name.bold()),
+            Err(e) => {
+                println!("  {} {} ({})", "ERR".red(), entry.name.bold(), e);
+                errors.push((entry.name.clone(), format!("{e}")));
+            }
+        }
+    }
+
+    println!();
+    if errors.is_empty() {
+        println!(
+            "{} Created rig '{}' from '{}' ({} repos)",
+            "ok".green(),
+            name.bold(),
+            source_name,
+            valid_entries.len()
+        );
+    } else {
+        let succeeded = valid_entries.len() - errors.len();
+        println!(
+            "{} Created rig '{}' from '{}' ({} repos added, {} failed)",
+            "WARN".yellow(),
+            name.bold(),
+            source_name,
+            succeeded,
+            errors.len()
+        );
+        for (repo_name, err) in &errors {
+            println!("  {} {}: {}", "ERR".red(), repo_name, err);
+        }
+    }
 
     Ok(())
 }
@@ -119,14 +242,54 @@ pub fn add(ws_name: Option<&str>, repo_path: &str, opts: AddOptions<'_>) -> Resu
 
     let remote = remote.unwrap_or("origin");
 
+    add_repo_to_rig(
+        &ws_dir,
+        &mut manifest,
+        &source_dir,
+        &repo_name,
+        branch,
+        remote,
+        upstream,
+        detach,
+    )?;
+
+    println!(
+        "{} Added '{}' to rig '{}'",
+        "ok".green(),
+        repo_name.bold(),
+        manifest.name
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// shared: add a single repo worktree to a rig
+// ---------------------------------------------------------------------------
+
+/// Core logic for adding a repo worktree to a rig manifest.
+///
+/// Handles: fetch, default-branch detection, worktree creation (with
+/// branch-existence checks), and `RepoEntry` construction. Used by both
+/// `add` and `create --from`.
+#[allow(clippy::too_many_arguments)]
+fn add_repo_to_rig(
+    ws_dir: &Path,
+    manifest: &mut Manifest,
+    source_dir: &Path,
+    repo_name: &str,
+    branch: Option<&str>,
+    remote: &str,
+    upstream: Option<&str>,
+    detach: bool,
+) -> Result<()> {
     // Fetch latest before creating the worktree
     print!("  Fetching {} ({})... ", repo_name.bold(), remote.dimmed());
-    git::fetch(&source_dir, remote)?;
+    git::fetch(source_dir, remote)?;
     println!("{}", "ok".green());
 
-    let default_branch = git::default_branch(&source_dir, remote)?;
-    let worktree_path = manifest.worktree_dir(&ws_dir, &repo_name);
-    // When --upstream is set, start the worktree from the upstream branch
+    let default_branch = git::default_branch(source_dir, remote)?;
+    let worktree_path = manifest.worktree_dir(ws_dir, repo_name);
+    // When upstream is set, start the worktree from the upstream branch
     // so that git tracking and git log show the correct remote ref.
     let effective_start = upstream.unwrap_or(&default_branch);
     let start_point = format!("{remote}/{effective_start}");
@@ -138,18 +301,18 @@ pub fn add(ws_name: Option<&str>, repo_path: &str, opts: AddOptions<'_>) -> Resu
     let recorded_branch = if worktree_exists {
         // Recover from a previous interrupted add
         println!("  Worktree already exists, recovering...");
-        let branch = git::current_branch(&worktree_path)?;
-        if branch == git::DETACHED {
+        let b = git::current_branch(&worktree_path)?;
+        if b == git::DETACHED {
             git::DETACHED.to_string()
         } else {
-            branch
+            b
         }
     } else if detach {
         println!(
             "  Creating worktree (detached at {})...",
             default_branch.dimmed()
         );
-        git::worktree_add_detached(&source_dir, &worktree_path, &start_point)?;
+        git::worktree_add_detached(source_dir, &worktree_path, &start_point)?;
         git::DETACHED.to_string()
     } else {
         let branch_name = branch.map_or_else(|| format!("rig/{}", manifest.name), str::to_string);
@@ -162,20 +325,20 @@ pub fn add(ws_name: Option<&str>, repo_path: &str, opts: AddOptions<'_>) -> Resu
             )
         };
 
-        if git::branch_exists(&source_dir, &branch_name) {
+        if git::branch_exists(source_dir, &branch_name) {
             println!(
                 "  Creating worktree (existing branch {})...",
                 branch_name.cyan()
             );
-            git::worktree_add_existing(&source_dir, &worktree_path, &branch_name)
+            git::worktree_add_existing(source_dir, &worktree_path, &branch_name)
                 .with_context(branch_hint)?;
-        } else if git::remote_branch_exists(&source_dir, &branch_name, remote) {
+        } else if git::remote_branch_exists(source_dir, &branch_name, remote) {
             println!(
                 "  Creating worktree (tracking {remote}/{})...",
                 branch_name.cyan()
             );
             git::worktree_add_new_branch(
-                &source_dir,
+                source_dir,
                 &worktree_path,
                 &branch_name,
                 &format!("{remote}/{branch_name}"),
@@ -187,7 +350,7 @@ pub fn add(ws_name: Option<&str>, repo_path: &str, opts: AddOptions<'_>) -> Resu
                 branch_name.cyan(),
                 effective_start.dimmed()
             );
-            git::worktree_add_new_branch(&source_dir, &worktree_path, &branch_name, &start_point)
+            git::worktree_add_new_branch(source_dir, &worktree_path, &branch_name, &start_point)
                 .with_context(branch_hint)?;
         }
 
@@ -195,21 +358,15 @@ pub fn add(ws_name: Option<&str>, repo_path: &str, opts: AddOptions<'_>) -> Resu
     };
 
     manifest.add_repo(RepoEntry {
-        name: repo_name.clone(),
-        source: source_dir,
+        name: repo_name.to_string(),
+        source: source_dir.to_path_buf(),
         branch: recorded_branch,
         default_branch,
         remote: remote.to_string(),
         upstream: upstream.map(str::to_string),
     });
-    manifest.save(&ws_dir)?;
+    manifest.save(ws_dir)?;
 
-    println!(
-        "{} Added '{}' to rig '{}'",
-        "ok".green(),
-        repo_name.bold(),
-        manifest.name
-    );
     Ok(())
 }
 

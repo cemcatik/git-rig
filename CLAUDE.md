@@ -31,6 +31,7 @@ A pre-commit hook is auto-installed into `.git/hooks/` on the first `cargo build
 - **Shells out to `git`** rather than using `git2` crate — worktree support in libgit2 is incomplete, and raw git gives better error messages.
 - **`.rig.json` manifest** in each workspace root tracks repos, branches, remote, and optional upstream. Commands that take an optional workspace name resolve it by walking up from CWD to find this file.
 - **`add`/`remove`/`status`/`sync`** infer workspace from CWD; `create`/`destroy` require explicit name.
+- **`create --from`** clones a rig by creating new worktrees for each source repo. Pre-validates source paths; `--skip` excludes invalid repos instead of failing. Post-validation failures (branch conflicts, fetch errors) use continue-and-report. Detached repos stay detached. Upstream and remote config are inherited per-repo.
 - **`add` doubles as update** — re-running `add` with `--upstream` on an existing repo updates the upstream field instead of erroring. `--no-upstream` clears it.
 - **Default branch naming**: `rig/<workspace-name>` when `--branch` is not specified.
 - **`sync` conflict strategy**: fetch + rebase onto the effective upstream (custom if set, otherwise default branch), abort on conflict (don't leave repo in broken state). `--stash` flag for auto-stashing dirty worktrees.

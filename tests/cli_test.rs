@@ -1051,3 +1051,313 @@ fn exec_invalid_repo_filter() {
         .failure()
         .stderr(predicate::str::contains("not in rig"));
 }
+
+// ---------------------------------------------------------------------------
+// create --from
+// ---------------------------------------------------------------------------
+
+#[test]
+fn create_from_happy_path() {
+    let sandbox = common::TestSandbox::new();
+    let _ws_dir = sandbox.create_workspace_with_repos("source-ws", &["repo-a", "repo-b"]);
+
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .args(["create", "target-ws", "--from", "source-ws"])
+        .current_dir(sandbox.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Created rig 'target-ws' from 'source-ws'",
+        ))
+        .stdout(predicate::str::contains("2 repos"));
+
+    // Verify worktrees exist
+    let target = sandbox.path().join("target-ws");
+    assert!(target.join("repo-a").exists());
+    assert!(target.join("repo-b").exists());
+
+    // Verify manifest has both repos
+    let raw = std::fs::read_to_string(target.join(".rig.json")).unwrap();
+    assert!(raw.contains("repo-a"));
+    assert!(raw.contains("repo-b"));
+
+    // Verify branches are rig/<target-name>, not rig/<source-name>
+    assert!(raw.contains(r#""branch": "rig/target-ws""#));
+    assert!(!raw.contains(r#""branch": "rig/source-ws""#));
+}
+
+#[test]
+fn create_from_inherits_upstream() {
+    let sandbox = common::TestSandbox::new();
+    let ws_dir = sandbox.create_workspace_with_repos("source-ws", &["repo-a"]);
+    let repo_dir = sandbox.path().join("repo-a");
+
+    // Create an upstream branch on the remote
+    common::git(&repo_dir, &["checkout", "-b", "integration"]);
+    sandbox.commit_file("repo-a", "integration.txt", "new", "integration commit");
+    common::git(&repo_dir, &["push", "-u", "origin", "integration"]);
+    common::git(&repo_dir, &["checkout", "main"]);
+
+    // Set upstream on source rig
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .args(["add", "--upstream", "integration"])
+        .arg(repo_dir.to_str().unwrap())
+        .current_dir(&ws_dir)
+        .assert()
+        .success();
+
+    // Clone the rig
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .args(["create", "target-ws", "--from", "source-ws"])
+        .current_dir(sandbox.path())
+        .assert()
+        .success();
+
+    // Verify upstream is inherited
+    let target = sandbox.path().join("target-ws");
+    let raw = std::fs::read_to_string(target.join(".rig.json")).unwrap();
+    assert!(raw.contains(r#""upstream": "integration""#));
+
+    // Verify the worktree starts from the upstream branch's content
+    assert!(target.join("repo-a").join("integration.txt").exists());
+}
+
+#[test]
+fn create_from_detached_repos_stay_detached() {
+    let sandbox = common::TestSandbox::new();
+    let repo_path = sandbox.create_repo("repo-a");
+    let ws_dir = sandbox.create_workspace("source-ws");
+
+    // Add as detached
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .args(["add", "--detach"])
+        .arg(repo_path.to_str().unwrap())
+        .current_dir(&ws_dir)
+        .assert()
+        .success();
+
+    // Clone the rig
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .args(["create", "target-ws", "--from", "source-ws"])
+        .current_dir(sandbox.path())
+        .assert()
+        .success();
+
+    // Verify repo is detached in target
+    let target = sandbox.path().join("target-ws");
+    let raw = std::fs::read_to_string(target.join(".rig.json")).unwrap();
+    assert!(raw.contains(r#""branch": "(detached)""#));
+}
+
+#[test]
+fn create_from_source_not_found() {
+    let sandbox = common::TestSandbox::new();
+
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .args(["create", "target-ws", "--from", "nonexistent"])
+        .current_dir(sandbox.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not found"));
+}
+
+#[test]
+fn create_from_target_already_exists() {
+    let sandbox = common::TestSandbox::new();
+    sandbox.create_workspace_with_repos("source-ws", &["repo-a"]);
+    sandbox.create_workspace("target-ws");
+
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .args(["create", "target-ws", "--from", "source-ws"])
+        .current_dir(sandbox.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("already exists"));
+}
+
+#[test]
+fn create_from_invalid_source_repo_fails() {
+    let sandbox = common::TestSandbox::new();
+    let ws_dir = sandbox.create_workspace("source-ws");
+
+    // Manually write a manifest entry pointing to a nonexistent path
+    let manifest_path = ws_dir.join(".rig.json");
+    std::fs::write(
+        &manifest_path,
+        serde_json::to_string_pretty(&serde_json::json!({
+            "name": "source-ws",
+            "repos": [{
+                "name": "gone-repo",
+                "source": "/nonexistent/path/gone-repo",
+                "branch": "rig/source-ws",
+                "default_branch": "main",
+                "remote": "origin"
+            }]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .args(["create", "target-ws", "--from", "source-ws"])
+        .current_dir(sandbox.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("source repos invalid"))
+        .stderr(predicate::str::contains("gone-repo"));
+
+    // Target should not have been created
+    assert!(!sandbox.path().join("target-ws").exists());
+}
+
+#[test]
+fn create_from_skip_invalid_repos() {
+    let sandbox = common::TestSandbox::new();
+    let ws_dir = sandbox.create_workspace_with_repos("source-ws", &["repo-a"]);
+
+    // Add a bad entry to the manifest
+    let manifest_path = ws_dir.join(".rig.json");
+    let raw = std::fs::read_to_string(&manifest_path).unwrap();
+    let mut json: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    json["repos"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!({
+            "name": "gone-repo",
+            "source": "/nonexistent/path/gone-repo",
+            "branch": "rig/source-ws",
+            "default_branch": "main",
+            "remote": "origin"
+        }));
+    std::fs::write(&manifest_path, serde_json::to_string_pretty(&json).unwrap()).unwrap();
+
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .args(["create", "target-ws", "--from", "source-ws", "--skip"])
+        .current_dir(sandbox.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("WARN"))
+        .stdout(predicate::str::contains("Skipping"))
+        .stdout(predicate::str::contains("Created rig 'target-ws'"));
+
+    // Valid repo should be in the target
+    let target = sandbox.path().join("target-ws");
+    assert!(target.join("repo-a").exists());
+
+    // Invalid repo should not be in the target manifest
+    let raw = std::fs::read_to_string(target.join(".rig.json")).unwrap();
+    assert!(raw.contains("repo-a"));
+    assert!(!raw.contains("gone-repo"));
+}
+
+#[test]
+fn create_from_empty_source() {
+    let sandbox = common::TestSandbox::new();
+    sandbox.create_workspace("source-ws");
+
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .args(["create", "target-ws", "--from", "source-ws"])
+        .current_dir(sandbox.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("0 repos"));
+
+    // Target should exist with empty manifest
+    assert!(sandbox.path().join("target-ws").join(".rig.json").exists());
+}
+
+#[test]
+fn create_from_status_works_on_cloned_rig() {
+    let sandbox = common::TestSandbox::new();
+    sandbox.create_workspace_with_repos("source-ws", &["repo-a"]);
+
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .args(["create", "target-ws", "--from", "source-ws"])
+        .current_dir(sandbox.path())
+        .assert()
+        .success();
+
+    // Status should work on the cloned rig
+    let target = sandbox.path().join("target-ws");
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .arg("status")
+        .current_dir(&target)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("repo-a"))
+        .stdout(predicate::str::contains("rig/target-ws"));
+}
+
+#[test]
+fn create_from_inherits_custom_remote() {
+    let sandbox = common::TestSandbox::new();
+    let ws_dir = sandbox.create_workspace("source-ws");
+    let repo_path = sandbox.create_repo("repo-a");
+
+    // Add with custom remote name - first rename origin to upstream
+    common::git(&repo_path, &["remote", "rename", "origin", "upstream"]);
+    // Re-set remote HEAD after rename
+    common::git(&repo_path, &["remote", "set-head", "upstream", "--auto"]);
+
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .args(["add", "--remote", "upstream"])
+        .arg(repo_path.to_str().unwrap())
+        .current_dir(&ws_dir)
+        .assert()
+        .success();
+
+    // Clone the rig
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .args(["create", "target-ws", "--from", "source-ws"])
+        .current_dir(sandbox.path())
+        .assert()
+        .success();
+
+    // Verify remote is inherited
+    let target = sandbox.path().join("target-ws");
+    let raw = std::fs::read_to_string(target.join(".rig.json")).unwrap();
+    assert!(raw.contains(r#""remote": "upstream""#));
+}
+
+#[test]
+fn create_without_from_unchanged() {
+    let sandbox = common::TestSandbox::new();
+
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .args(["create", "my-ws"])
+        .current_dir(sandbox.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("ok"))
+        .stdout(predicate::str::contains("Add repos with"));
+
+    assert!(sandbox.path().join("my-ws").join(".rig.json").exists());
+}
+
+#[test]
+fn create_from_skip_requires_from() {
+    let sandbox = common::TestSandbox::new();
+
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .args(["create", "my-ws", "--skip"])
+        .current_dir(sandbox.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--from"));
+}

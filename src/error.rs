@@ -41,4 +41,15 @@ pub enum RigError {
 
     #[error("use --yes to confirm (stdin is not a terminal)")]
     ConfirmationRequired,
+
+    #[error("source repos invalid:\n{}", format_repo_errors(.errors))]
+    SourceReposInvalid { errors: Vec<(String, String)> },
+}
+
+fn format_repo_errors(errors: &[(String, String)]) -> String {
+    errors
+        .iter()
+        .map(|(name, reason)| format!("  {name}: {reason}"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }

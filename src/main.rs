@@ -23,6 +23,14 @@ enum Commands {
     Create {
         /// Rig name (created as a subdirectory of CWD)
         name: String,
+
+        /// Clone repos from an existing rig
+        #[arg(long, value_name = "SOURCE_RIG")]
+        from: Option<String>,
+
+        /// Skip invalid source repos instead of failing
+        #[arg(long, requires = "from")]
+        skip: bool,
     },
 
     /// Add a repository worktree to a rig
@@ -167,7 +175,7 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Create { name } => commands::create(&name),
+        Commands::Create { name, from, skip } => commands::create(&name, from.as_deref(), skip),
         Commands::Add {
             first,
             second,

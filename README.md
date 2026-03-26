@@ -82,6 +82,16 @@ git rig add ../api-server --upstream integration   # change upstream
 git rig add ../api-server --no-upstream            # revert to default branch
 ```
 
+### Clone a workspace
+
+To create a new workspace with the same repos as an existing one:
+
+```bash
+git rig create my-feature-v2 --from my-feature
+```
+
+Each repo gets a fresh `rig/my-feature-v2` branch. Upstream and remote config are inherited. Use `--skip` to continue past repos whose source paths are no longer valid.
+
 ### Check status
 
 ```bash
