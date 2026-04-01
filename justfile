@@ -35,6 +35,24 @@ test-e2e:
 coverage:
     cargo llvm-cov --lcov --output-path lcov.info
 
+# Cross-check: verify the project compiles for all release targets.
+# Uses `cargo check` (no linker needed) so it works without cross-compilers.
+# Installs missing targets automatically via rustup.
+cross-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    targets=(aarch64-apple-darwin aarch64-unknown-linux-gnu x86_64-apple-darwin x86_64-unknown-linux-gnu x86_64-pc-windows-msvc)
+    installed=$(rustup target list --installed)
+    for target in "${targets[@]}"; do
+        if ! echo "$installed" | grep -q "^$target$"; then
+            echo "Installing target: $target"
+            rustup target add "$target"
+        fi
+        echo "Checking $target..."
+        cargo check --target "$target" 2>&1 | tail -1
+    done
+    echo "All release targets compile."
+
 # Install to ~/.cargo/bin/git-rig
 install:
     cargo install --path .

@@ -228,9 +228,12 @@ just test                           # all tests
 just test-unit                      # unit tests — manifest ops, workspace resolution
 just test-integration               # integration tests — git operations against real repos
 just test-e2e                       # E2E tests — full CLI commands via assert_cmd
+just cross-check                    # verify all release targets compile (no linker needed)
 just coverage                       # generate lcov coverage report
 just deny                           # license + advisory audit (requires cargo-deny)
 ```
+
+`just cross-check` runs `cargo check` against all five release targets (macOS arm64/x86, Linux arm64/x86, Windows x86). This catches platform-specific compilation errors (like using `std::os::unix` without `#[cfg]` guards) without needing cross-compilers or linkers. Missing targets are installed automatically via `rustup`.
 
 A pre-commit hook (`hooks/pre-commit`) is auto-installed into `.git/hooks/` on the first `cargo build` or `cargo test`. It runs `cargo fmt --check` and `cargo clippy` before each commit. To update the hook after changes to `hooks/pre-commit`, delete `.git/hooks/pre-commit` and rebuild.
 

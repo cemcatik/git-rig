@@ -7,6 +7,23 @@ use walkdir::WalkDir;
 
 const RIGINCLUDE: &str = ".riginclude";
 
+/// Create a symlink, or copy if symlinks are not supported.
+/// Returns `true` if a real symlink was created, `false` if it fell back to copy.
+fn symlink_or_copy(original: &Path, link: &Path) -> std::io::Result<bool> {
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(original, link)?;
+        Ok(true)
+    }
+    #[cfg(not(unix))]
+    {
+        // Windows symlinks require SeCreateSymbolicLinkPrivilege.
+        // Fall back to copying, which works everywhere.
+        fs::copy(original, link)?;
+        Ok(false)
+    }
+}
+
 /// Options controlling provisioning behavior.
 ///
 /// When passed as `Option<ProvisionOpts>`, `None` means skip provisioning
@@ -203,8 +220,9 @@ fn copy_or_link_file(
             }
         };
 
-        match std::os::unix::fs::symlink(&link_target, &target_file) {
-            Ok(()) => report.files.push(FileResult::Linked(rel_str)),
+        match symlink_or_copy(&link_target, &target_file) {
+            Ok(true) => report.files.push(FileResult::Linked(rel_str)),
+            Ok(false) => report.files.push(FileResult::Copied(rel_str)),
             Err(e) => report.files.push(FileResult::Failed {
                 rel_path: rel_str,
                 error: format!("failed to create symlink: {e}"),

@@ -7,6 +7,7 @@ CLI tool for managing multi-repo workspaces using git worktrees.
 ```bash
 just check                     # fmt + clippy + deny + test (recommended)
 just test                      # run all tests
+just cross-check               # verify all release targets compile (no linker needed)
 just install                   # install to ~/.cargo/bin/git-rig
 cargo build                    # debug build
 cargo build --release          # release build
@@ -64,3 +65,4 @@ Each test creates its own `TestSandbox` (temp dir) — no shared state, no CWD m
 - `default_branch()` detection requires `origin/HEAD` to be set (done by `git clone`). For repos created with `git init`, run: `git remote set-head origin <branch>`.
 - `git rig destroy` force-removes worktrees (even dirty ones). `git rig remove` does not — it will fail on dirty worktrees.
 - `--upstream` sets the branch that `sync` rebases onto **and** the starting point for the worktree. The worktree is created from `{remote}/{upstream}`, so git tracking and `git log` show the upstream ref. The upstream branch must exist on the remote at add time. If it's later deleted, `sync` will fail with a git error.
+- **Cross-platform: the project ships Windows builds via CI.** Never use `std::os::unix::*` without `#[cfg(unix)]` guards. The compiler won't warn you locally — it only fails on the Windows CI runner. When platform-specific code is needed, use a thin abstraction (see `symlink_or_copy` in `provision.rs`). See `docs/solutions/cross-platform-symlink-fallback.md`.
