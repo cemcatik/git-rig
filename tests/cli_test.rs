@@ -1939,3 +1939,351 @@ fn create_provision_flags_require_from() {
         .failure()
         .stderr(predicate::str::contains("--from"));
 }
+
+// ---------------------------------------------------------------------------
+// drift detection
+// ---------------------------------------------------------------------------
+
+/// Helper: switch a worktree to a different branch to induce branch mismatch.
+fn checkout_branch_in_worktree(worktree_path: &std::path::Path, branch: &str) {
+    let output = std::process::Command::new("git")
+        .args(["checkout", "-b", branch])
+        .current_dir(worktree_path)
+        .output()
+        .expect("git checkout in worktree");
+    assert!(
+        output.status.success(),
+        "git checkout -b {branch} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// Helper: detach HEAD in a worktree.
+fn detach_head_in_worktree(worktree_path: &std::path::Path) {
+    let output = std::process::Command::new("git")
+        .args(["checkout", "--detach"])
+        .current_dir(worktree_path)
+        .output()
+        .expect("git checkout --detach in worktree");
+    assert!(
+        output.status.success(),
+        "git checkout --detach failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// Helper: get the current HEAD SHA in a worktree.
+fn head_sha(worktree_path: &std::path::Path) -> String {
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(worktree_path)
+        .output()
+        .expect("git rev-parse HEAD");
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+#[test]
+fn drift_status_shows_branch_mismatch() {
+    let sandbox = common::TestSandbox::new();
+    let ws_dir = sandbox.create_workspace_with_repos("my-ws", &["repo-a"]);
+
+    // Induce branch mismatch: manifest says rig/my-ws, switch to "other-branch"
+    checkout_branch_in_worktree(&ws_dir.join("repo-a"), "other-branch");
+
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .arg("status")
+        .current_dir(&ws_dir)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("DRIFT"))
+        .stdout(predicate::str::contains("other-branch"))
+        .stdout(predicate::str::contains("rig/my-ws"));
+}
+
+#[test]
+fn drift_sync_skips_branch_drifted_repo() {
+    let sandbox = common::TestSandbox::new();
+    let ws_dir = sandbox.create_workspace_with_repos("my-ws", &["repo-a", "repo-b"]);
+
+    // Push a new commit to repo-a's remote so sync has something to rebase
+    sandbox.commit_file("repo-a", "new.txt", "content", "upstream change");
+    std::process::Command::new("git")
+        .args(["push"])
+        .current_dir(sandbox.path().join("repo-a"))
+        .output()
+        .unwrap();
+
+    // Drift repo-a by switching to a different branch
+    checkout_branch_in_worktree(&ws_dir.join("repo-a"), "wrong-branch");
+
+    // Record HEAD before sync to verify the drifted repo is not rebased
+    let head_before = head_sha(&ws_dir.join("repo-a"));
+
+    let output = Command::cargo_bin("git-rig")
+        .unwrap()
+        .arg("sync")
+        .current_dir(&ws_dir)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let stdout = String::from_utf8_lossy(&output);
+
+    // Drifted repo-a should appear in DRIFT warning, not be synced
+    assert!(stdout.contains("DRIFT"));
+    assert!(stdout.contains("repo-a"));
+    // repo-b should still sync normally
+    assert!(stdout.contains("ok"));
+
+    // Verify drifted repo-a was NOT rebased (HEAD unchanged)
+    let head_after = head_sha(&ws_dir.join("repo-a"));
+    assert_eq!(
+        head_before, head_after,
+        "drifted repo should not be rebased"
+    );
+}
+
+#[test]
+fn drift_sync_skips_missing_source() {
+    let sandbox = common::TestSandbox::new();
+    let ws_dir = sandbox.create_workspace_with_repos("my-ws", &["repo-a"]);
+
+    // Remove the source repo directory
+    let source_dir = sandbox.path().join("repo-a");
+    std::fs::remove_dir_all(&source_dir).unwrap();
+
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .arg("sync")
+        .current_dir(&ws_dir)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("DRIFT"))
+        .stdout(predicate::str::contains("source repo missing"));
+}
+
+#[test]
+fn drift_sync_skips_unexpected_detached() {
+    let sandbox = common::TestSandbox::new();
+    let ws_dir = sandbox.create_workspace_with_repos("my-ws", &["repo-a"]);
+
+    // Detach HEAD — manifest says rig/my-ws but worktree is now detached
+    detach_head_in_worktree(&ws_dir.join("repo-a"));
+
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .arg("sync")
+        .current_dir(&ws_dir)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("DRIFT"))
+        .stdout(predicate::str::contains("detached HEAD"));
+}
+
+#[test]
+fn drift_exec_warns_but_runs_on_branch_mismatch() {
+    let sandbox = common::TestSandbox::new();
+    let ws_dir = sandbox.create_workspace_with_repos("my-ws", &["repo-a"]);
+
+    // Induce branch mismatch
+    checkout_branch_in_worktree(&ws_dir.join("repo-a"), "other-branch");
+
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .args(["exec", "--", "echo", "hello"])
+        .current_dir(&ws_dir)
+        .assert()
+        .success()
+        // Should see both the DRIFT warning and the command output
+        .stdout(predicate::str::contains("DRIFT"))
+        .stdout(predicate::str::contains("hello"));
+}
+
+#[test]
+fn drift_exec_skips_missing_worktree() {
+    let sandbox = common::TestSandbox::new();
+    let ws_dir = sandbox.create_workspace_with_repos("my-ws", &["repo-a"]);
+
+    // Remove the worktree directory
+    std::fs::remove_dir_all(ws_dir.join("repo-a")).unwrap();
+
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .args(["exec", "--", "echo", "hello"])
+        .current_dir(&ws_dir)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("DRIFT"))
+        .stdout(predicate::str::contains("worktree missing"));
+}
+
+#[test]
+fn drift_no_output_when_clean() {
+    let sandbox = common::TestSandbox::new();
+    let ws_dir = sandbox.create_workspace_with_repos("my-ws", &["repo-a"]);
+
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .arg("status")
+        .current_dir(&ws_dir)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("DRIFT").not());
+}
+
+#[test]
+fn drift_exec_repo_filter_scopes_warnings() {
+    let sandbox = common::TestSandbox::new();
+    let ws_dir = sandbox.create_workspace_with_repos("my-ws", &["repo-a", "repo-b"]);
+
+    // Drift repo-b, but only exec on repo-a
+    checkout_branch_in_worktree(&ws_dir.join("repo-b"), "wrong-branch");
+
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .args(["exec", "--repo", "repo-a", "--", "echo", "hello"])
+        .current_dir(&ws_dir)
+        .assert()
+        .success()
+        // Should NOT see DRIFT warning because repo-b is not in the filter
+        .stdout(predicate::str::contains("DRIFT").not())
+        .stdout(predicate::str::contains("hello"));
+}
+
+#[test]
+fn drift_refresh_skips_missing_source() {
+    let sandbox = common::TestSandbox::new();
+    let ws_dir = sandbox.create_workspace_with_repos("my-ws", &["repo-a", "repo-b"]);
+
+    // Remove repo-a's source clone
+    let source_dir = sandbox.path().join("repo-a");
+    std::fs::remove_dir_all(&source_dir).unwrap();
+
+    let output = Command::cargo_bin("git-rig")
+        .unwrap()
+        .arg("refresh")
+        .current_dir(&ws_dir)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let stdout = String::from_utf8_lossy(&output);
+
+    // Should show drift warning for repo-a
+    assert!(stdout.contains("DRIFT"));
+    assert!(stdout.contains("repo-a"));
+    // repo-b should still refresh normally
+    assert!(stdout.contains("repo-b"));
+}
+
+#[test]
+fn drift_expected_detached_no_warning() {
+    let sandbox = common::TestSandbox::new();
+    let ws_dir = sandbox.create_workspace("my-ws");
+    let repo_dir = sandbox.create_repo("repo-a");
+
+    // Add repo as detached
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .args(["add", &repo_dir.to_string_lossy(), "--detach"])
+        .current_dir(&ws_dir)
+        .assert()
+        .success();
+
+    // Status should have no DRIFT warning (detached is expected)
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .arg("status")
+        .current_dir(&ws_dir)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("DRIFT").not());
+}
+
+#[test]
+fn drift_worktree_unreachable_handled_gracefully() {
+    let sandbox = common::TestSandbox::new();
+    let ws_dir = sandbox.create_workspace_with_repos("my-ws", &["repo-a"]);
+
+    // Corrupt the worktree metadata so git commands fail inside it
+    sandbox.corrupt_worktree_metadata("repo-a");
+
+    // Status should show drift warning, not crash
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .arg("status")
+        .current_dir(&ws_dir)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("DRIFT"));
+}
+
+#[test]
+fn drift_dual_missing_worktree_and_source() {
+    let sandbox = common::TestSandbox::new();
+    let ws_dir = sandbox.create_workspace_with_repos("my-ws", &["repo-a"]);
+
+    // Remove both the worktree directory and the source repo
+    std::fs::remove_dir_all(ws_dir.join("repo-a")).unwrap();
+    std::fs::remove_dir_all(sandbox.path().join("repo-a")).unwrap();
+
+    // Status should show both drift types without crashing
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .arg("status")
+        .current_dir(&ws_dir)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("DRIFT"))
+        .stdout(predicate::str::contains("worktree missing"))
+        .stdout(predicate::str::contains("source repo missing"));
+}
+
+#[test]
+fn drift_refresh_only_shows_source_drift() {
+    let sandbox = common::TestSandbox::new();
+    let ws_dir = sandbox.create_workspace_with_repos("my-ws", &["repo-a", "repo-b"]);
+
+    // Branch-drift repo-a (worktree drift, not source drift)
+    checkout_branch_in_worktree(&ws_dir.join("repo-a"), "other-branch");
+
+    // Refresh should NOT show the branch drift (SourceOnly scope)
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .arg("refresh")
+        .current_dir(&ws_dir)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("DRIFT").not());
+}
+
+#[test]
+fn drift_detached_to_named_branch_detected() {
+    let sandbox = common::TestSandbox::new();
+    let ws_dir = sandbox.create_workspace("my-ws");
+    let repo_dir = sandbox.create_repo("repo-a");
+
+    // Add repo as detached
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .args(["add", &repo_dir.to_string_lossy(), "--detach"])
+        .current_dir(&ws_dir)
+        .assert()
+        .success();
+
+    // Manually check out a named branch in what should be a detached worktree
+    checkout_branch_in_worktree(&ws_dir.join("repo-a"), "sneaky-branch");
+
+    // Status should detect drift: manifest says (detached), worktree is on sneaky-branch
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .arg("status")
+        .current_dir(&ws_dir)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("DRIFT"))
+        .stdout(predicate::str::contains("sneaky-branch"));
+}

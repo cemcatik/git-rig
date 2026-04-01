@@ -15,10 +15,11 @@ cargo build --release          # release build
 
 ## Architecture
 
-Single-binary Rust CLI. Six source files:
+Single-binary Rust CLI. Seven source files:
 
 - `src/main.rs` — CLI definition (clap derive), dispatch
 - `src/commands.rs` — Command implementations (create, add, remove, destroy, list, status, sync, refresh, exec)
+- `src/drift.rs` — Manifest/reality drift detection: checks worktree existence, branch match, and source repo accessibility before commands run
 - `src/provision.rs` — `.riginclude` file parsing, pattern matching, and file provisioning (copy/symlink)
 - `src/workspace.rs` — Manifest types (`.rig.json`), workspace resolution from CWD
 - `src/git.rs` — Git operations (shells out to `git`, not libgit2)
@@ -38,6 +39,7 @@ A pre-commit hook is auto-installed into `.git/hooks/` on the first `cargo build
 - **Default branch naming**: `rig/<workspace-name>` when `--branch` is not specified.
 - **`sync` conflict strategy**: fetch + rebase onto the effective upstream (custom if set, otherwise default branch), abort on conflict (don't leave repo in broken state). `--stash` flag for auto-stashing dirty worktrees.
 - **Optional per-repo config pattern**: new fields use `Option<T>` with `#[serde(default, skip_serializing_if = "Option::is_none")]` and an `effective_*()` method for fallback logic. See `docs/solutions/upstream-config-with-fallback.md`.
+- **Manifest/reality drift detection**: Before `status`, `sync`, `exec`, and `refresh` run, an upfront pass checks every repo for: missing worktree, missing source repo, branch mismatch (manifest says one branch, worktree is on another), and unexpected detached HEAD. Drift is reported as `DRIFT`-prefixed warnings before command output. `sync` skips all drifted repos (prevents rebasing the wrong branch). `exec` skips only physically unavailable worktrees. `refresh` skips only missing source repos. `status` warns but displays everything. The check never errors — failures are absorbed as `WorktreeUnreachable` drift entries. The `DriftReport` caches `current_branch` results so `status` avoids redundant git subprocess calls. See `docs/brainstorms/2026-04-01-manifest-drift-detection-requirements.md` for design decisions.
 - **`.riginclude` local file provisioning**: Per-repo file (`.gitignore`-style patterns) listing local files to copy into new worktrees. Typically gitignored for personal use, but teams can commit it for shared patterns. On `add`, files come from the base clone; on `create --from`, from the source rig's worktrees. `.riginclude` itself is always copied (self-propagating). Copy by default (`--link` for symlinks). Existing files skipped with warning (`--force-provision` to overwrite). `--no-provision` skips entirely. Provisioning flags on `create` require `--from`. Provisioning failures are warnings, not fatal errors — this is a deliberate departure from the partial-failure-must-return-error pattern since file copying is auxiliary to workspace creation.
 
 ## Testing
@@ -54,7 +56,7 @@ just coverage                       # generate lcov coverage report
 Test structure:
 - `src/workspace.rs` (inline `#[cfg(test)]`) — Manifest CRUD, save/load roundtrip, migration, serde defaults, upstream config, workspace resolution via `_from` variants
 - `tests/git_test.rs` — Branch detection, worktree add/remove, dirty checks, ahead/behind, stash, rebase
-- `tests/cli_test.rs` — All subcommands end-to-end via `assert_cmd`, including upstream set/update/clear flows
+- `tests/cli_test.rs` — All subcommands end-to-end via `assert_cmd`, including upstream set/update/clear flows and drift detection (branch mismatch, missing worktree/source, detached HEAD, --repo filter scoping)
 - `tests/common/mod.rs` — `TestSandbox` fixture: creates temp dirs with bare+clone repos, worktrees, and workspaces
 
 Each test creates its own `TestSandbox` (temp dir) — no shared state, no CWD mutation. The `_from` variants (`resolve_workspace_from`, `resolve_base_dir_from`, `create_from`, `destroy_from`) accept a start directory so tests avoid `chdir`.

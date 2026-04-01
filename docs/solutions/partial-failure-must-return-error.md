@@ -94,7 +94,11 @@ fn cmd_returns_error_on_partial_failure() {
 
 ### Known exception: auxiliary operations
 
-The collect-and-fail pattern applies to the **primary** operation of a command (e.g., creating worktrees in `create --from`). Operations that are supplementary to the primary goal — like `.riginclude` file provisioning — may use warning-only reporting without returning `Err`. The key test: does the failure leave the system in a broken state, or just a degraded one? Provisioning failures leave a usable worktree with missing convenience files, not a corrupted workspace. See `docs/solutions/riginclude-local-file-provisioning.md` for details.
+The collect-and-fail pattern applies to the **primary** operation of a command (e.g., creating worktrees in `create --from`). Operations that are supplementary to the primary goal may use warning-only reporting without returning `Err`. The key test: does the failure leave the system in a broken state, or just a degraded one?
+
+Two known cases:
+- **`.riginclude` file provisioning** — failures leave a usable worktree with missing convenience files. See `docs/solutions/riginclude-local-file-provisioning.md`.
+- **Manifest drift detection** — pre-flight checks that warn about manifest-vs-reality divergence but never block command execution. The `check_drift()` function absorbs all errors into `WorktreeUnreachable` entries. See `docs/solutions/manifest-drift-detection.md`.
 
 ### Future consideration
 

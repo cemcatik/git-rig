@@ -5,6 +5,7 @@ use std::process::Command;
 use anyhow::{Context, Result, anyhow};
 use colored::Colorize;
 
+use crate::drift;
 use crate::error::RigError;
 use crate::git;
 use crate::provision::{self, ProvisionOpts};
@@ -703,6 +704,9 @@ pub fn list() -> Result<()> {
 pub fn status(name: Option<&str>) -> Result<()> {
     let (ws_dir, manifest) = workspace::resolve_workspace(name)?;
 
+    let report = drift::check_drift(&manifest, &ws_dir);
+    drift::print_drift_warnings(&report, None, false);
+
     println!("Rig: {} ({})\n", manifest.name.bold(), ws_dir.display());
 
     if manifest.repos.is_empty() {
@@ -715,12 +719,15 @@ pub fn status(name: Option<&str>) -> Result<()> {
 
         print!("  {}", repo.name.bold());
 
-        if !worktree_path.exists() {
+        if report.has_worktree_unavailable(&repo.name) {
             println!(" {}", "(missing)".red());
             continue;
         }
 
-        let branch = git::current_branch(&worktree_path).unwrap_or_else(|_| "(unknown)".into());
+        // Reuse cached branch from drift check, fall back to git call
+        let branch = report.branches.get(&repo.name).cloned().unwrap_or_else(|| {
+            git::current_branch(&worktree_path).unwrap_or_else(|_| "(unknown)".into())
+        });
         let dirty = git::is_dirty(&worktree_path).unwrap_or(false);
         let effective = repo.effective_upstream();
         let (ahead, behind) = git::ahead_behind(&worktree_path, &branch, effective, &repo.remote);
@@ -755,11 +762,18 @@ pub fn status(name: Option<&str>) -> Result<()> {
 pub fn refresh(name: Option<&str>) -> Result<()> {
     let (ws_dir, mut manifest) = workspace::resolve_workspace(name)?;
 
+    let report = drift::check_drift(&manifest, &ws_dir);
+    drift::print_drift_warnings(&report, None, true);
+
     println!("Refreshing rig '{}'\n", manifest.name.bold());
 
     let mut updated = false;
 
     for repo in &mut manifest.repos {
+        if report.has_source_missing(&repo.name) {
+            continue;
+        }
+
         print!("  {}: ", repo.name.bold());
 
         if let Err(e) = git::fetch(&repo.source, &repo.remote) {
@@ -805,17 +819,20 @@ pub fn refresh(name: Option<&str>) -> Result<()> {
 pub fn sync(name: Option<&str>, stash: bool) -> Result<()> {
     let (ws_dir, manifest) = workspace::resolve_workspace(name)?;
 
+    let report = drift::check_drift(&manifest, &ws_dir);
+    drift::print_drift_warnings(&report, None, false);
+
     println!("Syncing rig '{}'\n", manifest.name.bold());
 
     let mut errors: Vec<(String, String)> = Vec::new();
 
     for repo in &manifest.repos {
-        let worktree_path = manifest.worktree_dir(&ws_dir, &repo.name);
-
-        if !worktree_path.exists() {
-            println!("  {} {} (missing, skipped)", "-".yellow(), repo.name.bold());
+        // Skip any repo with drift — the warning block already informed the user
+        if report.has_any_drift(&repo.name) {
             continue;
         }
+
+        let worktree_path = manifest.worktree_dir(&ws_dir, &repo.name);
 
         if repo.branch == git::DETACHED {
             println!(
@@ -979,6 +996,14 @@ pub fn exec(
         }
     }
 
+    let report = drift::check_drift(&manifest, &ws_dir);
+    let repo_filter = if filter_repos.is_empty() {
+        None
+    } else {
+        Some(filter_repos)
+    };
+    drift::print_drift_warnings(&report, repo_filter, false);
+
     let repos: Vec<_> = manifest
         .repos
         .iter()
@@ -992,8 +1017,9 @@ pub fn exec(
 
         println!("{} {}", ">>>".bold(), repo.name.bold());
 
-        if !worktree_path.exists() {
-            println!("{} worktree missing, skipped", "WARN".yellow());
+        // Skip only when the worktree is physically unavailable
+        if report.has_worktree_unavailable(&repo.name) {
+            println!("{} worktree unavailable, skipped", "WARN".yellow());
             println!();
             continue;
         }

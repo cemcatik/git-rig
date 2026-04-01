@@ -134,6 +134,14 @@ Workspace: my-feature (/Users/you/projects/my-feature)
 
 Repos with a custom `--upstream` show `(vs <branch>)` to indicate what they sync against.
 
+If the filesystem/git state has diverged from the manifest (e.g., someone ran `git checkout main` inside a worktree), drift warnings appear at the top:
+
+```
+  DRIFT api-server: on main, expected rig/my-feature
+```
+
+Drift detection runs automatically on `status`, `sync`, `exec`, and `refresh`. No flags needed.
+
 ### Sync (fetch + rebase)
 
 ```bash
@@ -150,6 +158,8 @@ Syncing workspace 'my-feature'
 
 ok All repos synced
 ```
+
+Repos with drift (branch mismatch, unexpected detached HEAD, missing source) are automatically skipped during sync to prevent rebasing the wrong branch.
 
 ### Run a command across repos
 
@@ -255,3 +265,4 @@ This bumps the version in `Cargo.toml`, updates `Cargo.lock`, commits, tags, and
 - `--upstream` sets the branch that the worktree starts from and that `sync` rebases onto. The upstream branch must exist on the remote at add time. Git tracking and `git log` will reference the upstream ref.
 - `.riginclude` uses gitignore pattern syntax (globs, `**`, trailing `/` for directories, `!` for negation, `#` for comments). Only the file at the repo root is read — no recursive/nested `.riginclude` files.
 - You can edit `.rig.json` directly to change remotes, branches, or other settings.
+- If you manually switch branches inside a worktree (`git checkout main`), `status` and `sync` will detect the mismatch and warn. `sync` will skip the drifted repo to prevent rebasing the wrong branch.
