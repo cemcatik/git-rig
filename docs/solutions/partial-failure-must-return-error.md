@@ -92,6 +92,10 @@ fn cmd_returns_error_on_partial_failure() {
 }
 ```
 
+### Known exception: auxiliary operations
+
+The collect-and-fail pattern applies to the **primary** operation of a command (e.g., creating worktrees in `create --from`). Operations that are supplementary to the primary goal — like `.riginclude` file provisioning — may use warning-only reporting without returning `Err`. The key test: does the failure leave the system in a broken state, or just a degraded one? Provisioning failures leave a usable worktree with missing convenience files, not a corrupted workspace. See `docs/solutions/riginclude-local-file-provisioning.md` for details.
+
 ### Future consideration
 
 Extract a shared `run_for_each_repo` helper that handles the iteration, error collection, summary printing, and error return. Individual commands supply only the per-repo closure. This eliminates the bug class entirely because no new command author writes the error-aggregation code.

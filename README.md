@@ -90,7 +90,32 @@ To create a new workspace with the same repos as an existing one:
 git rig create my-feature-v2 --from my-feature
 ```
 
-Each repo gets a fresh `rig/my-feature-v2` branch. Upstream and remote config are inherited. Use `--skip` to continue past repos whose source paths are no longer valid.
+Each repo gets a fresh `rig/my-feature-v2` branch. Upstream and remote config are inherited. Local files from `.riginclude` are carried over from the source rig's worktrees. Use `--skip` to continue past repos whose source paths are no longer valid.
+
+### Local file provisioning
+
+Repos often have local files (`.env`, IDE config, tool overrides) that are gitignored but needed for development. Create a `.riginclude` file in the repo root with gitignore-style patterns:
+
+```
+# .riginclude
+.env*
+.vscode/
+docker-compose.override.yml
+```
+
+When `git rig add` or `git rig create --from` creates a worktree, matching files are automatically copied from the source:
+
+```bash
+git rig add ../api-server                    # copies .env, .vscode/, etc. from the clone
+git rig create v2 --from v1                  # copies from source rig's worktrees
+git rig add ../api-server --no-provision     # skip file provisioning
+git rig add ../api-server --link             # symlink instead of copy
+git rig add ../api-server --force-provision  # overwrite existing files
+```
+
+`.riginclude` itself is always copied to the new worktree so it propagates automatically. The file can be gitignored (personal) or committed (team-shared).
+
+Provisioning failures are warnings — the worktree is still created and usable.
 
 ### Check status
 
@@ -225,4 +250,5 @@ This bumps the version in `Cargo.toml`, updates `Cargo.lock`, commits, tags, and
 - Default branch detection requires `origin/HEAD` (or `<remote>/HEAD`) to be set. For repos not created via `git clone`, run: `git remote set-head origin --auto`
 - `git rig destroy` force-removes worktrees. `git rig remove` does not — it fails on dirty worktrees unless `--force` is passed.
 - `--upstream` sets the branch that the worktree starts from and that `sync` rebases onto. The upstream branch must exist on the remote at add time. Git tracking and `git log` will reference the upstream ref.
+- `.riginclude` uses gitignore pattern syntax (globs, `**`, trailing `/` for directories, `!` for negation, `#` for comments). Only the file at the repo root is read — no recursive/nested `.riginclude` files.
 - You can edit `.rig.json` directly to change remotes, branches, or other settings.

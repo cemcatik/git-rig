@@ -4,6 +4,7 @@ use clap::{Parser, Subcommand};
 mod commands;
 mod error;
 mod git;
+mod provision;
 mod workspace;
 
 #[derive(Parser)]
@@ -31,6 +32,18 @@ enum Commands {
         /// Skip invalid source repos instead of failing
         #[arg(long, requires = "from")]
         skip: bool,
+
+        /// Skip copying local files from .riginclude
+        #[arg(long, requires = "from")]
+        no_provision: bool,
+
+        /// Symlink local files instead of copying
+        #[arg(long, requires = "from")]
+        link: bool,
+
+        /// Overwrite existing local files in the target
+        #[arg(long, requires = "from")]
+        force_provision: bool,
     },
 
     /// Add a repository worktree to a rig
@@ -66,6 +79,18 @@ enum Commands {
         /// Clear a previously set upstream branch
         #[arg(long, conflicts_with_all = ["detach", "upstream"])]
         no_upstream: bool,
+
+        /// Skip copying local files from .riginclude
+        #[arg(long)]
+        no_provision: bool,
+
+        /// Symlink local files instead of copying
+        #[arg(long)]
+        link: bool,
+
+        /// Overwrite existing local files in the target
+        #[arg(long)]
+        force_provision: bool,
     },
 
     /// Remove a repository worktree from a rig
@@ -175,7 +200,24 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Create { name, from, skip } => commands::create(&name, from.as_deref(), skip),
+        Commands::Create {
+            name,
+            from,
+            skip,
+            no_provision,
+            link,
+            force_provision,
+        } => {
+            let provision = if no_provision {
+                None
+            } else {
+                Some(provision::ProvisionOpts {
+                    force: force_provision,
+                    link,
+                })
+            };
+            commands::create(&name, from.as_deref(), skip, provision)
+        }
         Commands::Add {
             first,
             second,
@@ -185,8 +227,19 @@ fn main() -> Result<()> {
             detach,
             upstream,
             no_upstream,
+            no_provision,
+            link,
+            force_provision,
         } => {
             let (ws_name, repo_path) = split_ws_and_arg(first, second);
+            let provision = if no_provision {
+                None
+            } else {
+                Some(provision::ProvisionOpts {
+                    force: force_provision,
+                    link,
+                })
+            };
             commands::add(
                 ws_name.as_deref(),
                 &repo_path,
@@ -198,6 +251,7 @@ fn main() -> Result<()> {
                     upstream: upstream.as_deref(),
                     no_upstream,
                 },
+                provision,
             )
         }
         Commands::Remove {

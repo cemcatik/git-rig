@@ -14,10 +14,11 @@ cargo build --release          # release build
 
 ## Architecture
 
-Single-binary Rust CLI. Five source files:
+Single-binary Rust CLI. Six source files:
 
 - `src/main.rs` — CLI definition (clap derive), dispatch
 - `src/commands.rs` — Command implementations (create, add, remove, destroy, list, status, sync, refresh, exec)
+- `src/provision.rs` — `.riginclude` file parsing, pattern matching, and file provisioning (copy/symlink)
 - `src/workspace.rs` — Manifest types (`.rig.json`), workspace resolution from CWD
 - `src/git.rs` — Git operations (shells out to `git`, not libgit2)
 - `src/error.rs` — `RigError` enum (structured errors via `thiserror`)
@@ -36,6 +37,7 @@ A pre-commit hook is auto-installed into `.git/hooks/` on the first `cargo build
 - **Default branch naming**: `rig/<workspace-name>` when `--branch` is not specified.
 - **`sync` conflict strategy**: fetch + rebase onto the effective upstream (custom if set, otherwise default branch), abort on conflict (don't leave repo in broken state). `--stash` flag for auto-stashing dirty worktrees.
 - **Optional per-repo config pattern**: new fields use `Option<T>` with `#[serde(default, skip_serializing_if = "Option::is_none")]` and an `effective_*()` method for fallback logic. See `docs/solutions/upstream-config-with-fallback.md`.
+- **`.riginclude` local file provisioning**: Per-repo file (`.gitignore`-style patterns) listing local files to copy into new worktrees. Typically gitignored for personal use, but teams can commit it for shared patterns. On `add`, files come from the base clone; on `create --from`, from the source rig's worktrees. `.riginclude` itself is always copied (self-propagating). Copy by default (`--link` for symlinks). Existing files skipped with warning (`--force-provision` to overwrite). `--no-provision` skips entirely. Provisioning flags on `create` require `--from`. Provisioning failures are warnings, not fatal errors — this is a deliberate departure from the partial-failure-must-return-error pattern since file copying is auxiliary to workspace creation.
 
 ## Testing
 

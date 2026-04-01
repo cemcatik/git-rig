@@ -3,6 +3,8 @@ mod common;
 #[path = "../src/error.rs"]
 mod error;
 
+use std::os::unix::fs::PermissionsExt;
+
 use assert_cmd::Command;
 use predicates::prelude::*;
 
@@ -1469,4 +1471,471 @@ fn create_from_partial_runtime_failure() {
     let raw = std::fs::read_to_string(target.join(".rig.json")).unwrap();
     assert!(raw.contains("repo-a"));
     assert!(!raw.contains("repo-b"));
+}
+
+// ---------------------------------------------------------------------------
+// provision (.riginclude)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn add_provisions_local_files() {
+    let sandbox = common::TestSandbox::new();
+    let repo_path = sandbox.create_repo("repo-a");
+    let ws_dir = sandbox.create_workspace("my-ws");
+
+    sandbox.create_riginclude("repo-a", &[".env", ".env.local"]);
+    sandbox.create_local_file("repo-a", ".env", "SECRET=abc");
+    sandbox.create_local_file("repo-a", ".env.local", "LOCAL=xyz");
+
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .arg("add")
+        .arg(repo_path.to_str().unwrap())
+        .current_dir(&ws_dir)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("provisioned"));
+
+    let wt = ws_dir.join("repo-a");
+    assert_eq!(
+        std::fs::read_to_string(wt.join(".env")).unwrap(),
+        "SECRET=abc"
+    );
+    assert_eq!(
+        std::fs::read_to_string(wt.join(".env.local")).unwrap(),
+        "LOCAL=xyz"
+    );
+    // .riginclude itself should be copied (self-propagating)
+    assert!(wt.join(".riginclude").exists());
+}
+
+#[test]
+fn add_provisions_directory_recursively() {
+    let sandbox = common::TestSandbox::new();
+    let repo_path = sandbox.create_repo("repo-a");
+    let ws_dir = sandbox.create_workspace("my-ws");
+
+    sandbox.create_riginclude("repo-a", &[".vscode/"]);
+    sandbox.create_local_file(
+        "repo-a",
+        ".vscode/settings.json",
+        r#"{"editor.tabSize": 2}"#,
+    );
+    sandbox.create_local_file("repo-a", ".vscode/launch.json", r#"{"version": "0.2.0"}"#);
+
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .arg("add")
+        .arg(repo_path.to_str().unwrap())
+        .current_dir(&ws_dir)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("provisioned"));
+
+    let wt = ws_dir.join("repo-a");
+    assert_eq!(
+        std::fs::read_to_string(wt.join(".vscode/settings.json")).unwrap(),
+        r#"{"editor.tabSize": 2}"#
+    );
+    assert_eq!(
+        std::fs::read_to_string(wt.join(".vscode/launch.json")).unwrap(),
+        r#"{"version": "0.2.0"}"#
+    );
+}
+
+#[test]
+fn add_no_riginclude_no_provision_output() {
+    let sandbox = common::TestSandbox::new();
+    let repo_path = sandbox.create_repo("repo-a");
+    let ws_dir = sandbox.create_workspace("my-ws");
+
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .arg("add")
+        .arg(repo_path.to_str().unwrap())
+        .current_dir(&ws_dir)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("provisioned").not());
+}
+
+#[test]
+fn add_no_provision_flag_skips() {
+    let sandbox = common::TestSandbox::new();
+    let repo_path = sandbox.create_repo("repo-a");
+    let ws_dir = sandbox.create_workspace("my-ws");
+
+    sandbox.create_riginclude("repo-a", &[".env"]);
+    sandbox.create_local_file("repo-a", ".env", "SECRET=abc");
+
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .args(["add", "--no-provision"])
+        .arg(repo_path.to_str().unwrap())
+        .current_dir(&ws_dir)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("provisioned").not());
+
+    assert!(!ws_dir.join("repo-a").join(".env").exists());
+    assert!(!ws_dir.join("repo-a").join(".riginclude").exists());
+}
+
+#[test]
+fn add_skips_existing_files() {
+    let sandbox = common::TestSandbox::new();
+    let repo_path = sandbox.create_repo("repo-a");
+    let ws_dir = sandbox.create_workspace("my-ws");
+
+    sandbox.create_riginclude("repo-a", &[".env"]);
+    sandbox.create_local_file("repo-a", ".env", "FROM_SOURCE");
+
+    // Pre-create the worktree directory with a file already in it.
+    // This simulates the worktree recovery path (interrupted add) where
+    // the directory exists but isn't in the manifest.
+    let wt_dir = ws_dir.join("repo-a");
+    let wt_str = wt_dir.to_str().unwrap();
+    common::git(
+        &repo_path,
+        &["worktree", "add", "-b", "rig/my-ws", wt_str, "origin/main"],
+    );
+    std::fs::write(wt_dir.join(".env"), "PRE_EXISTING").unwrap();
+
+    // add should recover the existing worktree and skip the pre-existing .env
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .arg("add")
+        .arg(repo_path.to_str().unwrap())
+        .current_dir(&ws_dir)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("skipped"));
+
+    // .env should NOT be overwritten
+    assert_eq!(
+        std::fs::read_to_string(wt_dir.join(".env")).unwrap(),
+        "PRE_EXISTING"
+    );
+}
+
+#[test]
+fn add_force_overwrites_existing() {
+    let sandbox = common::TestSandbox::new();
+    let repo_path = sandbox.create_repo("repo-a");
+    let ws_dir = sandbox.create_workspace("my-ws");
+
+    sandbox.create_riginclude("repo-a", &[".env"]);
+    sandbox.create_local_file("repo-a", ".env", "FROM_SOURCE");
+
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .arg("add")
+        .arg(repo_path.to_str().unwrap())
+        .current_dir(&ws_dir)
+        .assert()
+        .success();
+
+    std::fs::write(ws_dir.join("repo-a").join(".env"), "MODIFIED").unwrap();
+    sandbox.create_local_file("repo-a", ".env", "UPDATED_SOURCE");
+
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .args(["remove", "--force", "--keep-branch", "repo-a"])
+        .current_dir(&ws_dir)
+        .assert()
+        .success();
+
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .args(["add", "--force-provision"])
+        .arg(repo_path.to_str().unwrap())
+        .current_dir(&ws_dir)
+        .assert()
+        .success();
+
+    assert_eq!(
+        std::fs::read_to_string(ws_dir.join("repo-a").join(".env")).unwrap(),
+        "UPDATED_SOURCE"
+    );
+}
+
+#[test]
+fn add_link_creates_symlinks() {
+    let sandbox = common::TestSandbox::new();
+    let repo_path = sandbox.create_repo("repo-a");
+    let ws_dir = sandbox.create_workspace("my-ws");
+
+    sandbox.create_riginclude("repo-a", &[".env"]);
+    sandbox.create_local_file("repo-a", ".env", "SECRET=abc");
+
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .args(["add", "--link"])
+        .arg(repo_path.to_str().unwrap())
+        .current_dir(&ws_dir)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("linked"));
+
+    let link = ws_dir.join("repo-a").join(".env");
+    assert!(link.symlink_metadata().unwrap().file_type().is_symlink());
+    assert_eq!(std::fs::read_to_string(&link).unwrap(), "SECRET=abc");
+}
+
+#[test]
+fn add_riginclude_self_propagates() {
+    let sandbox = common::TestSandbox::new();
+    let repo_path = sandbox.create_repo("repo-a");
+    let ws_dir = sandbox.create_workspace("my-ws");
+
+    sandbox.create_riginclude("repo-a", &[".env"]);
+    sandbox.create_local_file("repo-a", ".env", "SECRET=abc");
+
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .arg("add")
+        .arg(repo_path.to_str().unwrap())
+        .current_dir(&ws_dir)
+        .assert()
+        .success();
+
+    let wt = ws_dir.join("repo-a");
+    assert!(wt.join(".riginclude").exists());
+    assert_eq!(
+        std::fs::read_to_string(wt.join(".riginclude")).unwrap(),
+        ".env\n"
+    );
+}
+
+#[test]
+fn create_from_provisions_from_source_rig() {
+    let sandbox = common::TestSandbox::new();
+    let source_ws = sandbox.create_workspace_with_repos("source-ws", &["repo-a"]);
+
+    let source_wt = source_ws.join("repo-a");
+    std::fs::write(source_wt.join(".riginclude"), ".env\n").unwrap();
+    std::fs::write(source_wt.join(".env"), "FROM_RIG").unwrap();
+
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .args(["create", "target-ws", "--from", "source-ws"])
+        .current_dir(sandbox.path())
+        .assert()
+        .success();
+
+    let target_wt = sandbox.path().join("target-ws").join("repo-a");
+    assert_eq!(
+        std::fs::read_to_string(target_wt.join(".env")).unwrap(),
+        "FROM_RIG"
+    );
+    assert!(target_wt.join(".riginclude").exists());
+}
+
+#[test]
+fn create_from_no_provision() {
+    let sandbox = common::TestSandbox::new();
+    let source_ws = sandbox.create_workspace_with_repos("source-ws", &["repo-a"]);
+
+    let source_wt = source_ws.join("repo-a");
+    std::fs::write(source_wt.join(".riginclude"), ".env\n").unwrap();
+    std::fs::write(source_wt.join(".env"), "FROM_RIG").unwrap();
+
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .args([
+            "create",
+            "target-ws",
+            "--from",
+            "source-ws",
+            "--no-provision",
+        ])
+        .current_dir(sandbox.path())
+        .assert()
+        .success();
+
+    let target_wt = sandbox.path().join("target-ws").join("repo-a");
+    assert!(!target_wt.join(".env").exists());
+    assert!(!target_wt.join(".riginclude").exists());
+}
+
+#[test]
+fn add_glob_patterns_work() {
+    let sandbox = common::TestSandbox::new();
+    let repo_path = sandbox.create_repo("repo-a");
+    let ws_dir = sandbox.create_workspace("my-ws");
+
+    sandbox.create_riginclude("repo-a", &[".env*"]);
+    sandbox.create_local_file("repo-a", ".env", "BASE");
+    sandbox.create_local_file("repo-a", ".env.local", "LOCAL");
+    sandbox.create_local_file("repo-a", ".env.production", "PROD");
+
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .arg("add")
+        .arg(repo_path.to_str().unwrap())
+        .current_dir(&ws_dir)
+        .assert()
+        .success();
+
+    let wt = ws_dir.join("repo-a");
+    assert_eq!(std::fs::read_to_string(wt.join(".env")).unwrap(), "BASE");
+    assert_eq!(
+        std::fs::read_to_string(wt.join(".env.local")).unwrap(),
+        "LOCAL"
+    );
+    assert_eq!(
+        std::fs::read_to_string(wt.join(".env.production")).unwrap(),
+        "PROD"
+    );
+}
+
+#[test]
+fn add_negation_patterns_exclude_files() {
+    let sandbox = common::TestSandbox::new();
+    let repo_path = sandbox.create_repo("repo-a");
+    let ws_dir = sandbox.create_workspace("my-ws");
+
+    sandbox.create_riginclude("repo-a", &[".env*", "!.env.production"]);
+    sandbox.create_local_file("repo-a", ".env", "BASE");
+    sandbox.create_local_file("repo-a", ".env.local", "LOCAL");
+    sandbox.create_local_file("repo-a", ".env.production", "PROD");
+
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .arg("add")
+        .arg(repo_path.to_str().unwrap())
+        .current_dir(&ws_dir)
+        .assert()
+        .success();
+
+    let wt = ws_dir.join("repo-a");
+    assert!(wt.join(".env").exists());
+    assert!(wt.join(".env.local").exists());
+    assert!(!wt.join(".env.production").exists());
+}
+
+#[test]
+fn add_provision_failure_is_warning_not_fatal() {
+    let sandbox = common::TestSandbox::new();
+    let repo_path = sandbox.create_repo("repo-a");
+    let ws_dir = sandbox.create_workspace("my-ws");
+
+    // Create .riginclude referencing a file that doesn't exist
+    // plus one that does — the missing file should not fail the command
+    sandbox.create_riginclude("repo-a", &[".env", "nonexistent-dir/"]);
+    sandbox.create_local_file("repo-a", ".env", "SECRET=abc");
+
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .arg("add")
+        .arg(repo_path.to_str().unwrap())
+        .current_dir(&ws_dir)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("provisioned"));
+
+    // .env should still be provisioned despite the nonexistent pattern
+    let wt = ws_dir.join("repo-a");
+    assert_eq!(
+        std::fs::read_to_string(wt.join(".env")).unwrap(),
+        "SECRET=abc"
+    );
+    // Repo should be in the manifest
+    let raw = std::fs::read_to_string(ws_dir.join(".rig.json")).unwrap();
+    assert!(raw.contains("repo-a"));
+}
+
+#[test]
+fn add_provision_unreadable_source_still_succeeds() {
+    let sandbox = common::TestSandbox::new();
+    let repo_path = sandbox.create_repo("repo-a");
+    let ws_dir = sandbox.create_workspace("my-ws");
+
+    sandbox.create_riginclude("repo-a", &[".env", ".secret"]);
+    sandbox.create_local_file("repo-a", ".env", "OK");
+    sandbox.create_local_file("repo-a", ".secret", "HIDDEN");
+
+    // Make .secret unreadable
+    let secret_path = sandbox.path().join("repo-a").join(".secret");
+    std::fs::set_permissions(&secret_path, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .arg("add")
+        .arg(repo_path.to_str().unwrap())
+        .current_dir(&ws_dir)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("warning"));
+
+    // .env should still be provisioned
+    assert_eq!(
+        std::fs::read_to_string(ws_dir.join("repo-a").join(".env")).unwrap(),
+        "OK"
+    );
+    // Repo should be in the manifest despite provisioning warning
+    let raw = std::fs::read_to_string(ws_dir.join(".rig.json")).unwrap();
+    assert!(raw.contains("repo-a"));
+
+    // Restore permissions for cleanup
+    std::fs::set_permissions(&secret_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+}
+
+#[test]
+fn create_from_link_flag_propagates() {
+    let sandbox = common::TestSandbox::new();
+    let source_ws = sandbox.create_workspace_with_repos("source-ws", &["repo-a"]);
+
+    let source_wt = source_ws.join("repo-a");
+    std::fs::write(source_wt.join(".riginclude"), ".env\n").unwrap();
+    std::fs::write(source_wt.join(".env"), "FROM_RIG").unwrap();
+
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .args(["create", "target-ws", "--from", "source-ws", "--link"])
+        .current_dir(sandbox.path())
+        .assert()
+        .success();
+
+    let target_env = sandbox.path().join("target-ws").join("repo-a").join(".env");
+    assert!(
+        target_env
+            .symlink_metadata()
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert_eq!(std::fs::read_to_string(&target_env).unwrap(), "FROM_RIG");
+}
+
+#[test]
+fn create_provision_flags_require_from() {
+    let sandbox = common::TestSandbox::new();
+
+    // --no-provision without --from should fail
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .args(["create", "my-ws", "--no-provision"])
+        .current_dir(sandbox.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--from"));
+
+    // --link without --from should fail
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .args(["create", "my-ws", "--link"])
+        .current_dir(sandbox.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--from"));
+
+    // --force-provision without --from should fail
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .args(["create", "my-ws", "--force-provision"])
+        .current_dir(sandbox.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--from"));
 }

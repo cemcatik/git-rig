@@ -7,18 +7,30 @@ use colored::Colorize;
 
 use crate::error::RigError;
 use crate::git;
+use crate::provision::{self, ProvisionOpts};
 use crate::workspace::{self, Manifest, RepoEntry};
 
 // ---------------------------------------------------------------------------
 // create
 // ---------------------------------------------------------------------------
 
-pub fn create(name: &str, from: Option<&str>, skip: bool) -> Result<()> {
+pub fn create(
+    name: &str,
+    from: Option<&str>,
+    skip: bool,
+    provision: Option<ProvisionOpts>,
+) -> Result<()> {
     let cwd = std::env::current_dir()?;
-    create_from(&cwd, name, from, skip)
+    create_from(&cwd, name, from, skip, provision)
 }
 
-pub fn create_from(start_dir: &Path, name: &str, from: Option<&str>, skip: bool) -> Result<()> {
+pub fn create_from(
+    start_dir: &Path,
+    name: &str,
+    from: Option<&str>,
+    skip: bool,
+    provision: Option<ProvisionOpts>,
+) -> Result<()> {
     let ws_dir = start_dir.join(name);
 
     if ws_dir.exists() {
@@ -26,7 +38,7 @@ pub fn create_from(start_dir: &Path, name: &str, from: Option<&str>, skip: bool)
     }
 
     if let Some(source_name) = from {
-        return create_from_source(start_dir, name, &ws_dir, source_name, skip);
+        return create_from_source(start_dir, name, &ws_dir, source_name, skip, &provision);
     }
 
     std::fs::create_dir_all(&ws_dir)?;
@@ -55,9 +67,11 @@ fn create_from_source(
     ws_dir: &Path,
     source_name: &str,
     skip: bool,
+    provision: &Option<ProvisionOpts>,
 ) -> Result<()> {
     // Resolve source rig
-    let (_, source_manifest) = workspace::resolve_workspace_from(start_dir, Some(source_name))?;
+    let (source_ws_dir, source_manifest) =
+        workspace::resolve_workspace_from(start_dir, Some(source_name))?;
 
     // Pre-validate: check all source repo paths exist and are git repos
     let mut valid_entries = Vec::new();
@@ -120,6 +134,11 @@ fn create_from_source(
 
     for entry in &valid_entries {
         let detach = entry.branch == git::DETACHED;
+        // Provision from source rig's worktree, not the base clone
+        let provision_source = provision.as_ref().and_then(|_| {
+            let worktree_path = source_ws_dir.join(&entry.name);
+            worktree_path.is_dir().then_some(worktree_path)
+        });
         let result = add_repo_to_rig(
             ws_dir,
             &mut manifest,
@@ -129,6 +148,8 @@ fn create_from_source(
             &entry.remote,
             entry.upstream.as_deref(),
             detach,
+            provision_source.as_deref(),
+            provision,
         );
 
         match result {
@@ -181,7 +202,12 @@ pub struct AddOptions<'a> {
     pub no_upstream: bool,
 }
 
-pub fn add(ws_name: Option<&str>, repo_path: &str, opts: AddOptions<'_>) -> Result<()> {
+pub fn add(
+    ws_name: Option<&str>,
+    repo_path: &str,
+    opts: AddOptions<'_>,
+    provision: Option<ProvisionOpts>,
+) -> Result<()> {
     let AddOptions {
         name,
         branch,
@@ -242,6 +268,8 @@ pub fn add(ws_name: Option<&str>, repo_path: &str, opts: AddOptions<'_>) -> Resu
 
     let remote = remote.unwrap_or("origin");
 
+    let provision_source = provision.as_ref().map(|_| source_dir.as_path());
+
     add_repo_to_rig(
         &ws_dir,
         &mut manifest,
@@ -251,6 +279,8 @@ pub fn add(ws_name: Option<&str>, repo_path: &str, opts: AddOptions<'_>) -> Resu
         remote,
         upstream,
         detach,
+        provision_source,
+        &provision,
     )?;
 
     println!(
@@ -281,6 +311,8 @@ fn add_repo_to_rig(
     remote: &str,
     upstream: Option<&str>,
     detach: bool,
+    provision_source: Option<&Path>,
+    provision_opts: &Option<ProvisionOpts>,
 ) -> Result<()> {
     // Fetch latest before creating the worktree
     print!("  Fetching {} ({})... ", repo_name.bold(), remote.dimmed());
@@ -356,6 +388,16 @@ fn add_repo_to_rig(
 
         branch_name
     };
+
+    // Provision local files from .riginclude (after worktree creation, before manifest save).
+    // Provisioning failures are intentionally warnings: file copying is auxiliary to
+    // workspace creation and should not fail the add/create command.
+    if let Some(prov_source) = provision_source
+        && let Some(opts) = provision_opts
+        && let Some(report) = provision::provision_files(prov_source, &worktree_path, opts)
+    {
+        provision::print_provision_report(&report);
+    }
 
     manifest.add_repo(RepoEntry {
         name: repo_name.to_string(),

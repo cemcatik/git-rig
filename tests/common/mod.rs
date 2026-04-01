@@ -148,6 +148,22 @@ impl TestSandbox {
         }
     }
 
+    /// Write a `.riginclude` file in a repo's clone directory.
+    pub fn create_riginclude(&self, repo_name: &str, patterns: &[&str]) {
+        let content = patterns.join("\n") + "\n";
+        let path = self.path().join(repo_name).join(".riginclude");
+        std::fs::write(&path, content).expect("write .riginclude");
+    }
+
+    /// Create a local file (gitignored) in a repo's clone directory.
+    pub fn create_local_file(&self, repo_name: &str, file: &str, content: &str) {
+        let file_path = self.path().join(repo_name).join(file);
+        if let Some(parent) = file_path.parent() {
+            std::fs::create_dir_all(parent).expect("create parent dirs");
+        }
+        std::fs::write(&file_path, content).expect("write local file");
+    }
+
     /// Run a git command in a directory within the sandbox, panic on failure.
     pub fn git(&self, dir_name: &str, args: &[&str]) -> String {
         let dir = self.path().join(dir_name);
