@@ -183,6 +183,12 @@ enum Commands {
         cmd: Vec<String>,
     },
 
+    /// Check environment and workspace health
+    Doctor {
+        /// Rig name (optional if inside a rig)
+        name: Option<String>,
+    },
+
     /// Generate shell completions
     #[command(
         after_help = "Examples:\n  git rig completions bash > ~/.bash_completion.d/git-rig\n  git rig completions zsh > ~/.zfunc/_git-rig\n  git rig completions fish > ~/.config/fish/completions/git-rig.fish"
@@ -201,18 +207,18 @@ fn main() -> Result<()> {
         libc::signal(libc::SIGPIPE, libc::SIG_DFL);
     }
 
-    if std::process::Command::new("git")
-        .arg("--version")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_err()
+    let cli = Cli::parse();
+
+    // Doctor handles its own git check (reports it as FAIL instead of hard exit).
+    // Completions don't need git. All other commands require git on PATH.
+    if !matches!(
+        cli.command,
+        Commands::Doctor { .. } | Commands::Completions { .. }
+    ) && !git::is_git_available()
     {
         eprintln!("error: git is not installed or not in PATH");
         std::process::exit(1);
     }
-
-    let cli = Cli::parse();
 
     match cli.command {
         Commands::Create {
@@ -294,6 +300,7 @@ fn main() -> Result<()> {
             fail_fast,
             cmd,
         } => commands::exec(rig.as_deref(), &repos, &cmd, fail_fast),
+        Commands::Doctor { name } => commands::doctor(name.as_deref()),
         Commands::Completions { shell } => {
             clap_complete::generate(
                 shell,

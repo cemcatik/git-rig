@@ -283,9 +283,145 @@ pub fn delete_branch(repo_dir: &Path, branch: &str) -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
+// Doctor helpers
+// ---------------------------------------------------------------------------
+
+/// Check if git is available on PATH.
+pub fn is_git_available() -> bool {
+    Command::new("git")
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok()
+}
+
+/// Parse `git --version` output into (major, minor, patch).
+///
+/// Handles formats like "git version 2.39.0" and "git version 2.39.0.windows.1".
+pub fn git_version() -> Result<(u32, u32, u32)> {
+    let output = Command::new("git")
+        .arg("--version")
+        .output()
+        .context("failed to run git --version")?;
+
+    let version_str = String::from_utf8_lossy(&output.stdout);
+    parse_git_version(&version_str)
+}
+
+fn parse_git_version(version_str: &str) -> Result<(u32, u32, u32)> {
+    // Handles: "git version 2.39.0", "git version 2.39.0.windows.1",
+    // and "git version 2.39.5 (Apple Git-154)".
+    let version_part = version_str
+        .trim()
+        .strip_prefix("git version ")
+        .ok_or_else(|| anyhow!("unexpected git --version format: {version_str}"))?;
+
+    // Isolate the version number before any suffix like " (Apple Git-154)"
+    let version_number = version_part
+        .split_whitespace()
+        .next()
+        .unwrap_or(version_part);
+
+    let parts: Vec<&str> = version_number.split('.').collect();
+    if parts.len() < 3 {
+        return Err(anyhow!("unexpected git version format: {version_str}"));
+    }
+
+    let major: u32 = parts[0].parse().context("bad major version")?;
+    let minor: u32 = parts[1].parse().context("bad minor version")?;
+    let patch: u32 = parts[2].parse().context("bad patch version")?;
+
+    Ok((major, minor, patch))
+}
+
+/// Check if `refs/remotes/{remote}/HEAD` is set for a repo.
+pub fn has_remote_head(repo_dir: &Path, remote: &str) -> bool {
+    let head_ref = format!("refs/remotes/{remote}/HEAD");
+    git_output(repo_dir, &["symbolic-ref", &head_ref]).is_ok()
+}
+
+/// Probe a remote for reachability and list its branches in a single network call.
+///
+/// Returns `Some(branches)` if the remote is reachable (branch list may be empty),
+/// or `None` if the remote is unreachable. This replaces separate reachability and
+/// branch-existence checks to avoid redundant network round-trips.
+pub fn probe_remote_branches(repo_dir: &Path, remote: &str) -> Option<Vec<String>> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo_dir)
+        .args(["ls-remote", "--heads", remote])
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let branches = stdout
+        .lines()
+        .filter_map(|line| {
+            // Format: "<sha>\trefs/heads/<branch>"
+            line.split('\t')
+                .nth(1)?
+                .strip_prefix("refs/heads/")
+                .map(String::from)
+        })
+        .collect();
+
+    Some(branches)
+}
+
+// ---------------------------------------------------------------------------
 // Misc
 // ---------------------------------------------------------------------------
 
 pub fn is_git_repo(dir: &Path) -> bool {
     git_output(dir, &["rev-parse", "--git-dir"]).is_ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_git_version_standard() {
+        assert_eq!(parse_git_version("git version 2.39.0").unwrap(), (2, 39, 0));
+    }
+
+    #[test]
+    fn parse_git_version_windows() {
+        assert_eq!(
+            parse_git_version("git version 2.43.0.windows.1").unwrap(),
+            (2, 43, 0)
+        );
+    }
+
+    #[test]
+    fn parse_git_version_with_trailing_newline() {
+        assert_eq!(
+            parse_git_version("git version 2.30.1\n").unwrap(),
+            (2, 30, 1)
+        );
+    }
+
+    #[test]
+    fn parse_git_version_apple_git() {
+        assert_eq!(
+            parse_git_version("git version 2.39.5 (Apple Git-154)").unwrap(),
+            (2, 39, 5)
+        );
+    }
+
+    #[test]
+    fn parse_git_version_garbage() {
+        assert!(parse_git_version("not git").is_err());
+    }
+
+    #[test]
+    fn parse_git_version_too_few_parts() {
+        assert!(parse_git_version("git version 2.39").is_err());
+    }
 }

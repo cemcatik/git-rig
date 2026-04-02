@@ -38,7 +38,7 @@ focus: open-ended product improvement
 **Downsides:** Scope creep risk — must resist adding every possible check. Network checks (remote reachability) can be slow.
 **Confidence:** 80%
 **Complexity:** Medium
-**Status:** Unexplored
+**Status:** Done (2026-04-02 — brainstorm + implementation)
 
 ### 3. Cross-Workspace Branch Conflict Detection
 **Description:** When `add` fails with "already checked out in another worktree," parse `git worktree list` on the source repo, cross-reference known rigs, and tell the user exactly which workspace holds the conflicting branch. Currently the `branch_hint` closure just says "may already be checked out" with no actionable detail.
@@ -105,3 +105,4 @@ focus: open-ended product improvement
 - 2026-04-01: Initial open-ended ideation — 48 raw ideas from 6 frames, 31 after dedupe, 6 survived adversarial filtering
 - 2026-04-01: Brainstorm started for #1 (Manifest/Reality Drift Detection)
 - 2026-04-02: Implemented #5 (sync --repo), #3 (branch conflict detection), #4 (shell completions)
+- 2026-04-02: Brainstormed + implemented #2 (git rig doctor)

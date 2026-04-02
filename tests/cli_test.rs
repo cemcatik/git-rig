@@ -2521,3 +2521,283 @@ fn completions_invalid_shell() {
         .assert()
         .failure();
 }
+
+// ---------------------------------------------------------------------------
+// doctor
+// ---------------------------------------------------------------------------
+
+#[test]
+fn doctor_healthy_rig_exits_zero() {
+    let sandbox = common::TestSandbox::new();
+    let ws_dir = sandbox.create_workspace_with_repos("my-ws", &["repo-a"]);
+
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .arg("doctor")
+        .current_dir(&ws_dir)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("All checks passed"))
+        .stdout(predicate::str::contains("source repo exists"))
+        .stdout(predicate::str::contains("worktree exists and reachable"))
+        .stdout(predicate::str::contains("branch matches manifest"))
+        .stdout(predicate::str::contains("origin/HEAD set"))
+        .stdout(predicate::str::contains("reachable"));
+}
+
+#[test]
+fn doctor_shows_environment_checks() {
+    let sandbox = common::TestSandbox::new();
+    let ws_dir = sandbox.create_workspace_with_repos("my-ws", &["repo-a"]);
+
+    let output = Command::cargo_bin("git-rig")
+        .unwrap()
+        .arg("doctor")
+        .current_dir(&ws_dir)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let stdout = String::from_utf8_lossy(&output);
+
+    assert!(stdout.contains("git found on PATH"));
+    assert!(stdout.contains("git version"));
+}
+
+#[test]
+fn doctor_outside_rig_shows_env_only() {
+    let sandbox = common::TestSandbox::new();
+
+    let output = Command::cargo_bin("git-rig")
+        .unwrap()
+        .arg("doctor")
+        .current_dir(sandbox.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let stdout = String::from_utf8_lossy(&output);
+
+    assert!(stdout.contains("PASS"));
+    assert!(stdout.contains("git found on PATH"));
+    assert!(stdout.contains("not inside a rig"));
+    // Should NOT contain per-repo checks
+    assert!(!stdout.contains("source repo"));
+    assert!(!stdout.contains("worktree exists"));
+}
+
+#[test]
+fn doctor_detects_missing_worktree() {
+    let sandbox = common::TestSandbox::new();
+    let ws_dir = sandbox.create_workspace_with_repos("my-ws", &["repo-a"]);
+
+    // Delete the worktree directory to simulate missing worktree
+    std::fs::remove_dir_all(ws_dir.join("repo-a")).unwrap();
+
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .arg("doctor")
+        .current_dir(&ws_dir)
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("FAIL"))
+        .stdout(predicate::str::contains("worktree missing"));
+}
+
+#[test]
+fn doctor_detects_missing_source() {
+    let sandbox = common::TestSandbox::new();
+    let ws_dir = sandbox.create_workspace_with_repos("my-ws", &["repo-a"]);
+
+    // Delete the source repo
+    std::fs::remove_dir_all(sandbox.path().join("repo-a")).unwrap();
+
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .arg("doctor")
+        .current_dir(&ws_dir)
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("FAIL"))
+        .stdout(predicate::str::contains("source repo missing"));
+}
+
+#[test]
+fn doctor_detects_branch_mismatch() {
+    let sandbox = common::TestSandbox::new();
+    let ws_dir = sandbox.create_workspace_with_repos("my-ws", &["repo-a"]);
+
+    // Switch worktree to a different branch
+    checkout_branch_in_worktree(&ws_dir.join("repo-a"), "other-branch");
+
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .arg("doctor")
+        .current_dir(&ws_dir)
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("WARN"))
+        .stdout(predicate::str::contains("branch mismatch"));
+}
+
+#[test]
+fn doctor_detects_missing_origin_head() {
+    let sandbox = common::TestSandbox::new();
+    let ws_dir = sandbox.create_workspace_with_repos("my-ws", &["repo-a"]);
+
+    // Remove origin/HEAD from the source repo
+    let source_dir = sandbox.path().join("repo-a");
+    std::process::Command::new("git")
+        .args(["remote", "set-head", "origin", "--delete"])
+        .current_dir(&source_dir)
+        .output()
+        .unwrap();
+
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .arg("doctor")
+        .current_dir(&ws_dir)
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("WARN"))
+        .stdout(predicate::str::contains("origin/HEAD not set"))
+        .stdout(predicate::str::contains("git remote set-head"));
+}
+
+#[test]
+fn doctor_detects_unreachable_remote() {
+    let sandbox = common::TestSandbox::new();
+    let ws_dir = sandbox.create_workspace_with_repos("my-ws", &["repo-a"]);
+
+    // Point origin to a non-existent path
+    let source_dir = sandbox.path().join("repo-a");
+    std::process::Command::new("git")
+        .args(["remote", "set-url", "origin", "/nonexistent/path.git"])
+        .current_dir(&source_dir)
+        .output()
+        .unwrap();
+
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .arg("doctor")
+        .current_dir(&ws_dir)
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("WARN"))
+        .stdout(predicate::str::contains("not reachable"));
+}
+
+#[test]
+fn doctor_detects_missing_upstream_branch() {
+    let sandbox = common::TestSandbox::new();
+    let repo_path = sandbox.create_repo("repo-a");
+    let ws_dir = sandbox.create_workspace("my-ws");
+
+    // Add repo normally first
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .arg("add")
+        .arg(repo_path.to_str().unwrap())
+        .current_dir(&ws_dir)
+        .assert()
+        .success();
+
+    // Then update upstream to a nonexistent branch (add doubles as update)
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .args(["add", "--upstream", "nonexistent-branch"])
+        .arg(repo_path.to_str().unwrap())
+        .current_dir(&ws_dir)
+        .assert()
+        .success();
+
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .arg("doctor")
+        .current_dir(&ws_dir)
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("WARN"))
+        .stdout(predicate::str::contains("nonexistent-branch"))
+        .stdout(predicate::str::contains("not found on remote"));
+}
+
+#[test]
+fn doctor_with_explicit_rig_name() {
+    let sandbox = common::TestSandbox::new();
+    sandbox.create_workspace_with_repos("my-ws", &["repo-a"]);
+
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .args(["doctor", "my-ws"])
+        .current_dir(sandbox.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("All checks passed"));
+}
+
+#[test]
+fn doctor_with_nonexistent_rig_name() {
+    let sandbox = common::TestSandbox::new();
+
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .args(["doctor", "nonexistent"])
+        .current_dir(sandbox.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not found"));
+}
+
+#[test]
+fn doctor_detects_unexpected_detached_head() {
+    let sandbox = common::TestSandbox::new();
+    let ws_dir = sandbox.create_workspace_with_repos("my-ws", &["repo-a"]);
+
+    // Detach HEAD in the worktree (manifest expects rig/my-ws)
+    detach_head_in_worktree(&ws_dir.join("repo-a"));
+
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .arg("doctor")
+        .current_dir(&ws_dir)
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("WARN"))
+        .stdout(predicate::str::contains("detached HEAD"))
+        .stdout(predicate::str::contains("rig/my-ws"));
+}
+
+#[test]
+fn doctor_detects_unreachable_worktree() {
+    let sandbox = common::TestSandbox::new();
+    let ws_dir = sandbox.create_workspace_with_repos("my-ws", &["repo-a"]);
+
+    // Corrupt the worktree metadata so git commands fail but directory still exists
+    sandbox.corrupt_worktree_metadata("repo-a");
+
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .arg("doctor")
+        .current_dir(&ws_dir)
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("FAIL"))
+        .stdout(predicate::str::contains("worktree unreachable"));
+}
+
+#[test]
+fn doctor_empty_rig() {
+    let sandbox = common::TestSandbox::new();
+    let ws_dir = sandbox.create_workspace("my-ws");
+
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .arg("doctor")
+        .current_dir(&ws_dir)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No repos"));
+}

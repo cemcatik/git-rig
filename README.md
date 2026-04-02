@@ -228,7 +228,7 @@ Each workspace is a directory containing a `.rig.json` manifest:
 - `upstream` is optional — when set, the worktree starts from this branch and `sync` rebases onto it instead of `default_branch`
 - Repos can live anywhere on disk — they don't need to be siblings of the workspace
 - Worktrees are created inside the workspace directory
-- Commands that accept an optional workspace name (`add`, `remove`, `status`, `sync`, `refresh`, `exec`) auto-detect the workspace by walking up from CWD
+- Commands that accept an optional workspace name (`add`, `remove`, `status`, `sync`, `refresh`, `exec`, `doctor`) auto-detect the workspace by walking up from CWD
 
 ## Development
 
@@ -258,6 +258,40 @@ scripts/release.sh 0.2.0
 ```
 
 This bumps the version in `Cargo.toml`, updates `Cargo.lock`, commits, tags, and pushes. The tag push triggers the [release workflow](.github/workflows/release.yml) which builds binaries, creates a GitHub Release, and publishes the Homebrew formula.
+
+### Check workspace health
+
+```bash
+git rig doctor
+```
+
+```
+Environment
+
+  PASS  git found on PATH
+  PASS  git version 2.39.0 (>= 2.30 required)
+
+Rig: my-feature (2 repos)
+
+  api-server
+    PASS  source repo exists
+    PASS  worktree exists and reachable
+    PASS  branch matches manifest (rig/my-feature)
+    PASS  origin/HEAD set
+    PASS  remote 'origin' reachable
+    PASS  upstream branch 'develop' exists on remote
+
+  web-app
+    PASS  source repo exists
+    PASS  worktree exists and reachable
+    WARN  origin/HEAD not set
+      Default branch detection won't work.
+      Fix: cd /Users/you/projects/web-app && git remote set-head origin --auto
+
+ok All checks passed
+```
+
+Checks environment prerequisites (git version >= 2.30) and per-repo health (worktree integrity, branch state, remote reachability, upstream validity). Works outside a rig too — shows environment checks only. Exits 1 on any issue for scripting/CI use.
 
 ### Shell completions
 

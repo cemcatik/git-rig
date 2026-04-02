@@ -985,6 +985,244 @@ pub fn sync(name: Option<&str>, filter_repos: &[String], stash: bool) -> Result<
 // exec
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// doctor
+// ---------------------------------------------------------------------------
+
+/// Minimum git version required by git-rig (for `git worktree repair`).
+const MIN_GIT_VERSION: (u32, u32, u32) = (2, 30, 0);
+
+pub fn doctor(name: Option<&str>) -> Result<()> {
+    let mut has_issues = false;
+
+    println!("{}", "Environment".bold().underline());
+    println!();
+
+    // R4a + R4b: Git on PATH and version >= 2.30
+    // Single git_version() call checks both — saves a subprocess on the happy path.
+    match git::git_version() {
+        Ok((major, minor, patch)) => {
+            print_pass("git found on PATH");
+            let (min_major, min_minor, _) = MIN_GIT_VERSION;
+            if (major, minor, patch) >= MIN_GIT_VERSION {
+                print_pass(&format!(
+                    "git version {major}.{minor}.{patch} (>= {min_major}.{min_minor} required)"
+                ));
+            } else {
+                print_fail(&format!(
+                    "git version {major}.{minor}.{patch} is below minimum {min_major}.{min_minor}"
+                ));
+                println!("    git worktree repair requires git >= {min_major}.{min_minor}.");
+                println!("    Fix: upgrade git to {min_major}.{min_minor}+");
+                // R10: short-circuit
+                println!();
+                println!("{} per-repo checks skipped (git too old)", "SKIP".yellow());
+                std::process::exit(1);
+            }
+        }
+        Err(_) if !git::is_git_available() => {
+            print_fail("git not found on PATH");
+            println!("    Install git: https://git-scm.com/downloads");
+            println!();
+            println!(
+                "{} per-repo checks skipped (git not available)",
+                "SKIP".yellow()
+            );
+            std::process::exit(1);
+        }
+        Err(e) => {
+            print_fail(&format!("could not parse git version: {e}"));
+            std::process::exit(1);
+        }
+    }
+
+    println!();
+
+    // Tier 2: Per-repo checks (R1, R2, R3)
+    let ws_result = workspace::resolve_workspace(name);
+    let (ws_dir, manifest) = match ws_result {
+        Ok(pair) => pair,
+        Err(_) if name.is_none() => {
+            // R2: outside a rig, no error
+            println!(
+                "{}",
+                "(not inside a rig — per-repo checks skipped)".dimmed()
+            );
+            return Ok(());
+        }
+        Err(e) => return Err(e),
+    };
+
+    println!(
+        "{} ({} repos)",
+        format!("Rig: {}", manifest.name).bold().underline(),
+        manifest.repos.len()
+    );
+    println!();
+
+    if manifest.repos.is_empty() {
+        println!("  No repos. Add one with: git rig add <repo>");
+        return Ok(());
+    }
+
+    // Run drift detection to reuse for R5a-R5e
+    let drift_report = drift::check_drift(&manifest, &ws_dir);
+
+    for repo in &manifest.repos {
+        println!("  {}", repo.name.bold());
+
+        let worktree_path = manifest.worktree_dir(&ws_dir, &repo.name);
+
+        // R5a: Source repo exists (from drift: MissingSource)
+        let source_missing = drift_report.has_source_missing(&repo.name);
+        if source_missing {
+            has_issues = true;
+            print_repo_fail("source repo missing");
+            println!(
+                "      Re-clone or run: git rig remove {} && git rig add <path>",
+                repo.name
+            );
+        } else {
+            print_repo_pass("source repo exists");
+        }
+
+        // R5b + R5c: Worktree exists and is reachable (from drift: MissingWorktree, WorktreeUnreachable)
+        let worktree_ok = if !worktree_path.exists() {
+            has_issues = true;
+            print_repo_fail("worktree missing");
+            println!(
+                "      Fix: git rig remove {} && git rig add <path>",
+                repo.name
+            );
+            false
+        } else if drift_report.has_worktree_unavailable(&repo.name) {
+            has_issues = true;
+            print_repo_fail("worktree unreachable");
+            println!("      Fix: git worktree repair {}", worktree_path.display());
+            false
+        } else {
+            print_repo_pass("worktree exists and reachable");
+            true
+        };
+
+        // R5d + R5e: Branch matches manifest (from drift: BranchMismatch, UnexpectedDetached)
+        if worktree_ok {
+            let mut found_branch_drift = false;
+            for d in &drift_report.drifts {
+                if d.repo_name != repo.name {
+                    continue;
+                }
+                match &d.kind {
+                    drift::DriftKind::BranchMismatch { expected, actual } => {
+                        has_issues = true;
+                        found_branch_drift = true;
+                        print_repo_warn(&format!(
+                            "branch mismatch: on {actual}, expected {expected}"
+                        ));
+                        println!(
+                            "      Fix: cd {} && git checkout {expected}",
+                            worktree_path.display()
+                        );
+                    }
+                    drift::DriftKind::UnexpectedDetached { expected } => {
+                        has_issues = true;
+                        found_branch_drift = true;
+                        print_repo_warn(&format!("detached HEAD, expected branch {expected}"));
+                        println!(
+                            "      Fix: cd {} && git checkout {expected}",
+                            worktree_path.display()
+                        );
+                    }
+                    _ => {}
+                }
+            }
+            if !found_branch_drift {
+                print_repo_pass(&format!("branch matches manifest ({})", repo.branch));
+            }
+        }
+
+        // R5f, R5g, R5h: checks that require the source repo to exist
+        if !source_missing {
+            // R5f: origin/HEAD is set
+            if git::has_remote_head(&repo.source, &repo.remote) {
+                print_repo_pass(&format!("{}/HEAD set", repo.remote));
+            } else {
+                has_issues = true;
+                print_repo_warn(&format!("{}/HEAD not set", repo.remote));
+                println!("      Default branch detection won't work.");
+                println!(
+                    "      Fix: cd {} && git remote set-head {} --auto",
+                    repo.source.display(),
+                    repo.remote
+                );
+            }
+
+            // R5g + R5h: Remote reachability and upstream branch existence (single network call)
+            let remote_branches = git::probe_remote_branches(&repo.source, &repo.remote);
+            if let Some(ref branches) = remote_branches {
+                print_repo_pass(&format!("remote '{}' reachable", repo.remote));
+
+                if let Some(upstream) = &repo.upstream {
+                    if branches.iter().any(|b| b == upstream) {
+                        print_repo_pass(&format!("upstream branch '{upstream}' exists on remote"));
+                    } else {
+                        has_issues = true;
+                        print_repo_warn(&format!(
+                            "upstream branch '{upstream}' not found on remote"
+                        ));
+                        println!("      sync will fail for this repo.");
+                        println!(
+                            "      Fix: git rig add {} --upstream <valid-branch> or --no-upstream",
+                            repo.name
+                        );
+                    }
+                }
+            } else {
+                has_issues = true;
+                print_repo_warn(&format!("remote '{}' not reachable", repo.remote));
+                println!("      Check network connection or remote URL.");
+                println!(
+                    "      Verify: cd {} && git remote -v",
+                    repo.source.display()
+                );
+            }
+        }
+
+        println!();
+    }
+
+    if has_issues {
+        std::process::exit(1);
+    }
+
+    println!("{} All checks passed", "ok".green());
+    Ok(())
+}
+
+fn print_pass(msg: &str) {
+    println!("  {} {}", "PASS".green(), msg);
+}
+
+fn print_fail(msg: &str) {
+    println!("  {} {}", "FAIL".red(), msg);
+}
+
+fn print_repo_pass(msg: &str) {
+    println!("    {} {}", "PASS".green(), msg);
+}
+
+fn print_repo_warn(msg: &str) {
+    println!("    {} {}", "WARN".yellow(), msg);
+}
+
+fn print_repo_fail(msg: &str) {
+    println!("    {} {}", "FAIL".red(), msg);
+}
+
+// ---------------------------------------------------------------------------
+// exec
+// ---------------------------------------------------------------------------
+
 pub fn exec(
     name: Option<&str>,
     filter_repos: &[String],
