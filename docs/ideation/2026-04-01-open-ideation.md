@@ -46,14 +46,14 @@ focus: open-ended product improvement
 **Downsides:** Requires adding a `worktree_list` function to git.rs. Cross-referencing rigs means resolving multiple manifests.
 **Confidence:** 85%
 **Complexity:** Low-Medium
-**Status:** Unexplored
+**Status:** Done (2026-04-02 — find_worktree_for_branch() in git.rs, branch_hint shows worktree path)
 
 ### 4. Shell Completions
 **Description:** Generate bash/zsh/fish/PowerShell completions via `clap_complete`. Dynamic completions for rig names (via `find_workspaces`) and repo names (via manifest). Approximately 20 lines of code for static completions; dynamic completions require a custom completer.
 **Rationale:** Highest-ROI quality-of-life feature for any CLI. Disproportionate impact on discoverability and adoption. Every new subcommand or flag automatically gets completions. Near-zero cost for static, moderate for dynamic.
 **Confidence:** 95%
 **Complexity:** Low
-**Status:** Unexplored
+**Status:** Done (2026-04-02 — static completions via `completions` subcommand, dynamic left for future)
 
 ### 5. Partial Sync with `--repo` Filtering
 **Description:** Add `--repo` flag to `sync` (matching the pattern `exec` already uses). Allow syncing individual repos instead of all-or-nothing. Also add merge-base pre-check to skip repos that are already up-to-date.
@@ -61,7 +61,7 @@ focus: open-ended product improvement
 **Downsides:** Minimal. Consistency improvement that reuses existing patterns.
 **Confidence:** 95%
 **Complexity:** Low
-**Status:** Unexplored
+**Status:** Done (2026-04-02 — --repo flag on sync with validation, drift scoping, 5 E2E tests)
 
 ### 6. Machine-Readable Output (`--json`)
 **Description:** Global `--json` flag switching `status`, `list`, and `exec` output to structured JSON. Enables scripting (`git rig status --json | jq '.repos[] | select(.dirty)'`), CI integration, and editor plugins. `Manifest` already derives `Serialize`; `RigError` has structured fields.
@@ -104,3 +104,4 @@ focus: open-ended product improvement
 ## Session Log
 - 2026-04-01: Initial open-ended ideation — 48 raw ideas from 6 frames, 31 after dedupe, 6 survived adversarial filtering
 - 2026-04-01: Brainstorm started for #1 (Manifest/Reality Drift Detection)
+- 2026-04-02: Implemented #5 (sync --repo), #3 (branch conflict detection), #4 (shell completions)

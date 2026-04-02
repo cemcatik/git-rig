@@ -181,6 +181,29 @@ pub fn worktree_prune(source_repo: &Path) -> Result<()> {
     git_quiet(source_repo, &["worktree", "prune"])
 }
 
+/// Find which worktree has a branch checked out (if any).
+///
+/// Returns the worktree path where the given branch is currently checked out,
+/// or `None` if the branch isn't checked out anywhere.
+pub fn find_worktree_for_branch(repo_dir: &Path, branch: &str) -> Option<String> {
+    let output = git_output(repo_dir, &["worktree", "list", "--porcelain"]).ok()?;
+    let target_ref = format!("refs/heads/{branch}");
+
+    let mut current_path: Option<String> = None;
+    for line in output.lines() {
+        if let Some(path) = line.strip_prefix("worktree ") {
+            current_path = Some(path.to_string());
+        } else if let Some(ref_name) = line.strip_prefix("branch ") {
+            if ref_name == target_ref {
+                return current_path;
+            }
+        } else if line.is_empty() {
+            current_path = None;
+        }
+    }
+    None
+}
+
 // ---------------------------------------------------------------------------
 // Status helpers
 // ---------------------------------------------------------------------------

@@ -351,8 +351,11 @@ fn add_repo_to_rig(
         let branch_name = branch.map_or_else(|| format!("rig/{}", manifest.name), str::to_string);
 
         let branch_hint = || {
+            let location = git::find_worktree_for_branch(source_dir, &branch_name)
+                .map(|p| format!("\n  checked out in: {p}"))
+                .unwrap_or_default();
             format!(
-                "branch '{}' may already be checked out in another worktree\n  \
+                "branch '{}' is already checked out in another worktree{location}\n  \
                  hint: use --branch to specify a different branch name",
                 branch_name
             )
@@ -705,7 +708,7 @@ pub fn status(name: Option<&str>) -> Result<()> {
     let (ws_dir, manifest) = workspace::resolve_workspace(name)?;
 
     let report = drift::check_drift(&manifest, &ws_dir);
-    drift::print_drift_warnings(&report, None, false);
+    drift::print_drift_warnings(&report, &[], false);
 
     println!("Rig: {} ({})\n", manifest.name.bold(), ws_dir.display());
 
@@ -724,10 +727,13 @@ pub fn status(name: Option<&str>) -> Result<()> {
             continue;
         }
 
-        // Reuse cached branch from drift check, fall back to git call
-        let branch = report.branches.get(&repo.name).cloned().unwrap_or_else(|| {
-            git::current_branch(&worktree_path).unwrap_or_else(|_| "(unknown)".into())
-        });
+        // Reuse cached branch from drift check — if the worktree is reachable
+        // (not skipped above), check_drift always caches its branch.
+        let branch = report
+            .branches
+            .get(&repo.name)
+            .expect("branch should be cached if worktree is reachable")
+            .clone();
         let dirty = git::is_dirty(&worktree_path).unwrap_or(false);
         let effective = repo.effective_upstream();
         let (ahead, behind) = git::ahead_behind(&worktree_path, &branch, effective, &repo.remote);
@@ -763,7 +769,7 @@ pub fn refresh(name: Option<&str>) -> Result<()> {
     let (ws_dir, mut manifest) = workspace::resolve_workspace(name)?;
 
     let report = drift::check_drift(&manifest, &ws_dir);
-    drift::print_drift_warnings(&report, None, true);
+    drift::print_drift_warnings(&report, &[], true);
 
     println!("Refreshing rig '{}'\n", manifest.name.bold());
 
@@ -816,17 +822,33 @@ pub fn refresh(name: Option<&str>) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 #[allow(clippy::too_many_lines)]
-pub fn sync(name: Option<&str>, stash: bool) -> Result<()> {
+pub fn sync(name: Option<&str>, filter_repos: &[String], stash: bool) -> Result<()> {
     let (ws_dir, manifest) = workspace::resolve_workspace(name)?;
 
+    // Validate --repo filters against manifest
+    for r in filter_repos {
+        if manifest.find_repo(r).is_none() {
+            return Err(RigError::RepoNotInRig {
+                repo: r.to_string(),
+                rig: manifest.name.clone(),
+            }
+            .into());
+        }
+    }
+
     let report = drift::check_drift(&manifest, &ws_dir);
-    drift::print_drift_warnings(&report, None, false);
+    drift::print_drift_warnings(&report, filter_repos, false);
 
     println!("Syncing rig '{}'\n", manifest.name.bold());
 
     let mut errors: Vec<(String, String)> = Vec::new();
 
     for repo in &manifest.repos {
+        // Skip repos not in the filter
+        if !filter_repos.is_empty() && !filter_repos.iter().any(|f| f == &repo.name) {
+            continue;
+        }
+
         // Skip any repo with drift — the warning block already informed the user
         if report.has_any_drift(&repo.name) {
             continue;
@@ -885,10 +907,10 @@ pub fn sync(name: Option<&str>, stash: bool) -> Result<()> {
         let effective = repo.effective_upstream();
         if git::rebase(&worktree_path, effective, &repo.remote).is_ok() {
             let after = git::rev_parse_short(&worktree_path, "HEAD").unwrap_or_default();
-            let current =
-                git::current_branch(&worktree_path).unwrap_or_else(|_| repo.branch.clone());
+            // Non-drifted repos are guaranteed to be on repo.branch (drift check confirmed it).
+            // Rebase doesn't change which branch is checked out, so repo.branch is still correct.
             let (_ahead, behind) =
-                git::ahead_behind(&worktree_path, &current, effective, &repo.remote);
+                git::ahead_behind(&worktree_path, &repo.branch, effective, &repo.remote);
 
             let moved = if before == after {
                 "already up to date".dimmed().to_string()
@@ -997,22 +1019,16 @@ pub fn exec(
     }
 
     let report = drift::check_drift(&manifest, &ws_dir);
-    let repo_filter = if filter_repos.is_empty() {
-        None
-    } else {
-        Some(filter_repos)
-    };
-    drift::print_drift_warnings(&report, repo_filter, false);
-
-    let repos: Vec<_> = manifest
-        .repos
-        .iter()
-        .filter(|r| filter_repos.is_empty() || filter_repos.iter().any(|f| f == &r.name))
-        .collect();
+    drift::print_drift_warnings(&report, filter_repos, false);
 
     let mut errors: Vec<(String, String)> = Vec::new();
 
-    for repo in &repos {
+    for repo in &manifest.repos {
+        // Skip repos not in the filter
+        if !filter_repos.is_empty() && !filter_repos.iter().any(|f| f == &repo.name) {
+            continue;
+        }
+
         let worktree_path = manifest.worktree_dir(&ws_dir, &repo.name);
 
         println!("{} {}", ">>>".bold(), repo.name.bold());

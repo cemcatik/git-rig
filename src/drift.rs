@@ -149,20 +149,13 @@ pub fn check_drift(manifest: &Manifest, ws_dir: &Path) -> DriftReport {
 
 /// Print the drift warning block to stdout.
 ///
-/// - `repo_filter`: if `Some`, only print warnings for these repos (for exec --repo scoping).
+/// - `repo_filter`: if non-empty, only print warnings for these repos (for exec/sync --repo scoping).
 /// - `source_only`: if `true`, only print `MissingSource` drift (for refresh, which doesn't touch worktrees).
-pub fn print_drift_warnings(
-    report: &DriftReport,
-    repo_filter: Option<&[String]>,
-    source_only: bool,
-) {
+pub fn print_drift_warnings(report: &DriftReport, repo_filter: &[String], source_only: bool) {
     let visible: Vec<&RepoDrift> = report
         .drifts
         .iter()
-        .filter(|d| match &repo_filter {
-            Some(repos) => repos.iter().any(|r| r == &d.repo_name),
-            None => true,
-        })
+        .filter(|d| repo_filter.is_empty() || repo_filter.iter().any(|r| r == &d.repo_name))
         .filter(|d| {
             if source_only {
                 matches!(d.kind, DriftKind::MissingSource)
@@ -220,4 +213,90 @@ pub fn print_drift_warnings(
         }
     }
     println!();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_report(drifts: Vec<RepoDrift>) -> DriftReport {
+        DriftReport {
+            drifts,
+            branches: HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn has_any_drift_true() {
+        let report = make_report(vec![RepoDrift {
+            repo_name: "repo-a".into(),
+            kind: DriftKind::MissingWorktree,
+        }]);
+        assert!(report.has_any_drift("repo-a"));
+    }
+
+    #[test]
+    fn has_any_drift_false() {
+        let report = make_report(vec![]);
+        assert!(!report.has_any_drift("repo-a"));
+    }
+
+    #[test]
+    fn has_any_drift_different_repo() {
+        let report = make_report(vec![RepoDrift {
+            repo_name: "repo-b".into(),
+            kind: DriftKind::MissingWorktree,
+        }]);
+        assert!(!report.has_any_drift("repo-a"));
+    }
+
+    #[test]
+    fn has_worktree_unavailable_missing() {
+        let report = make_report(vec![RepoDrift {
+            repo_name: "repo-a".into(),
+            kind: DriftKind::MissingWorktree,
+        }]);
+        assert!(report.has_worktree_unavailable("repo-a"));
+    }
+
+    #[test]
+    fn has_worktree_unavailable_unreachable() {
+        let report = make_report(vec![RepoDrift {
+            repo_name: "repo-a".into(),
+            kind: DriftKind::WorktreeUnreachable {
+                error: "broken".into(),
+            },
+        }]);
+        assert!(report.has_worktree_unavailable("repo-a"));
+    }
+
+    #[test]
+    fn has_worktree_unavailable_false_for_branch_mismatch() {
+        let report = make_report(vec![RepoDrift {
+            repo_name: "repo-a".into(),
+            kind: DriftKind::BranchMismatch {
+                expected: "rig/ws".into(),
+                actual: "main".into(),
+            },
+        }]);
+        assert!(!report.has_worktree_unavailable("repo-a"));
+    }
+
+    #[test]
+    fn has_source_missing_true() {
+        let report = make_report(vec![RepoDrift {
+            repo_name: "repo-a".into(),
+            kind: DriftKind::MissingSource,
+        }]);
+        assert!(report.has_source_missing("repo-a"));
+    }
+
+    #[test]
+    fn has_source_missing_false_for_other_drift() {
+        let report = make_report(vec![RepoDrift {
+            repo_name: "repo-a".into(),
+            kind: DriftKind::MissingWorktree,
+        }]);
+        assert!(!report.has_source_missing("repo-a"));
+    }
 }

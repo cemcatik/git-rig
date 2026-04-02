@@ -322,3 +322,64 @@ fn rev_parse_short_returns_short_hash() {
     assert!(short.len() >= 4 && short.len() <= 12);
     assert!(short.chars().all(|c| c.is_ascii_hexdigit()));
 }
+
+// ---------------------------------------------------------------------------
+// find_worktree_for_branch
+// ---------------------------------------------------------------------------
+
+#[test]
+fn find_worktree_for_branch_found() {
+    let sandbox = common::TestSandbox::new();
+    let clone = sandbox.create_repo("wt-find");
+    let wt_path = sandbox.path().join("wt-find-wt");
+    common::git(
+        &clone,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "feature-branch",
+            wt_path.to_str().unwrap(),
+            "origin/main",
+        ],
+    );
+
+    let result = git::find_worktree_for_branch(&clone, "feature-branch");
+    assert!(result.is_some());
+    assert!(result.unwrap().contains("wt-find-wt"));
+}
+
+#[test]
+fn find_worktree_for_branch_not_found() {
+    let sandbox = common::TestSandbox::new();
+    let clone = sandbox.create_repo("wt-find-miss");
+
+    let result = git::find_worktree_for_branch(&clone, "nonexistent-branch");
+    assert!(result.is_none());
+}
+
+#[test]
+fn find_worktree_for_branch_detached_not_matched() {
+    let sandbox = common::TestSandbox::new();
+    let clone = sandbox.create_repo("wt-find-detach");
+    let wt_path = sandbox.path().join("wt-find-detach-wt");
+    common::git(
+        &clone,
+        &[
+            "worktree",
+            "add",
+            "--detach",
+            wt_path.to_str().unwrap(),
+            "origin/main",
+        ],
+    );
+
+    // Detached worktrees have no branch ref — searching for a branch
+    // that only exists as a detached checkout should return None
+    let result = git::find_worktree_for_branch(&clone, "nonexistent-detached");
+    assert!(result.is_none());
+
+    // The main clone has "main" checked out, so that IS found (not detached)
+    let result = git::find_worktree_for_branch(&clone, "main");
+    assert!(result.is_some());
+}

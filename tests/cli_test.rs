@@ -2061,7 +2061,8 @@ fn drift_sync_skips_missing_source() {
         .assert()
         .success()
         .stdout(predicate::str::contains("DRIFT"))
-        .stdout(predicate::str::contains("source repo missing"));
+        .stdout(predicate::str::contains("source repo missing"))
+        .stdout(predicate::str::contains("ERR").not());
 }
 
 #[test]
@@ -2116,7 +2117,29 @@ fn drift_exec_skips_missing_worktree() {
         .assert()
         .success()
         .stdout(predicate::str::contains("DRIFT"))
-        .stdout(predicate::str::contains("worktree missing"));
+        .stdout(predicate::str::contains("worktree missing"))
+        .stdout(predicate::str::contains("worktree unavailable, skipped"))
+        .stdout(predicate::str::contains("hello").not());
+}
+
+#[test]
+fn drift_exec_skips_unreachable_worktree() {
+    let sandbox = common::TestSandbox::new();
+    let ws_dir = sandbox.create_workspace_with_repos("my-ws", &["repo-a"]);
+
+    // Corrupt worktree metadata — directory still exists but git commands fail
+    sandbox.corrupt_worktree_metadata("repo-a");
+
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .args(["exec", "--", "echo", "hello"])
+        .current_dir(&ws_dir)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("DRIFT"))
+        .stdout(predicate::str::contains("worktree unreachable"))
+        .stdout(predicate::str::contains("worktree unavailable, skipped"))
+        .stdout(predicate::str::contains("hello").not());
 }
 
 #[test]
@@ -2211,14 +2234,16 @@ fn drift_worktree_unreachable_handled_gracefully() {
     // Corrupt the worktree metadata so git commands fail inside it
     sandbox.corrupt_worktree_metadata("repo-a");
 
-    // Status should show drift warning, not crash
+    // Status should show specific drift kind and treat repo as missing
     Command::cargo_bin("git-rig")
         .unwrap()
         .arg("status")
         .current_dir(&ws_dir)
         .assert()
         .success()
-        .stdout(predicate::str::contains("DRIFT"));
+        .stdout(predicate::str::contains("DRIFT"))
+        .stdout(predicate::str::contains("worktree unreachable"))
+        .stdout(predicate::str::contains("(missing)"));
 }
 
 #[test]
@@ -2251,13 +2276,15 @@ fn drift_refresh_only_shows_source_drift() {
     checkout_branch_in_worktree(&ws_dir.join("repo-a"), "other-branch");
 
     // Refresh should NOT show the branch drift (SourceOnly scope)
+    // but repo-a should still be refreshed (branch drift doesn't prevent refresh)
     Command::cargo_bin("git-rig")
         .unwrap()
         .arg("refresh")
         .current_dir(&ws_dir)
         .assert()
         .success()
-        .stdout(predicate::str::contains("DRIFT").not());
+        .stdout(predicate::str::contains("DRIFT").not())
+        .stdout(predicate::str::contains("repo-a"));
 }
 
 #[test]
@@ -2286,4 +2313,211 @@ fn drift_detached_to_named_branch_detected() {
         .success()
         .stdout(predicate::str::contains("DRIFT"))
         .stdout(predicate::str::contains("sneaky-branch"));
+}
+
+// ---------------------------------------------------------------------------
+// sync --repo filtering
+// ---------------------------------------------------------------------------
+
+#[test]
+fn sync_repo_filter() {
+    let sandbox = common::TestSandbox::new();
+    let ws_dir = sandbox.create_workspace_with_repos("my-ws", &["repo-a", "repo-b"]);
+
+    // Push a new commit to both repos' remotes
+    sandbox.commit_file("repo-a", "new-a.txt", "content", "upstream change a");
+    common::git(&sandbox.path().join("repo-a"), &["push"]);
+    sandbox.commit_file("repo-b", "new-b.txt", "content", "upstream change b");
+    common::git(&sandbox.path().join("repo-b"), &["push"]);
+
+    // Sync only repo-a
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .args(["sync", "--repo", "repo-a"])
+        .current_dir(&ws_dir)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("repo-a"))
+        .stdout(predicate::str::contains("->"));
+
+    // Verify repo-a was synced (has the new file)
+    assert!(ws_dir.join("repo-a").join("new-a.txt").exists());
+    // Verify repo-b was NOT synced (excluded by filter)
+    assert!(!ws_dir.join("repo-b").join("new-b.txt").exists());
+}
+
+#[test]
+fn sync_repo_filter_invalid_repo() {
+    let sandbox = common::TestSandbox::new();
+    let ws_dir = sandbox.create_workspace_with_repos("my-ws", &["repo-a"]);
+
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .args(["sync", "--repo", "nonexistent"])
+        .current_dir(&ws_dir)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not in rig"));
+}
+
+#[test]
+fn sync_repo_filter_multiple() {
+    let sandbox = common::TestSandbox::new();
+    let ws_dir = sandbox.create_workspace_with_repos("my-ws", &["repo-a", "repo-b", "repo-c"]);
+
+    // Push a new commit to repo-b so we can verify it wasn't synced
+    sandbox.commit_file("repo-b", "new-b.txt", "content", "upstream change b");
+    common::git(&sandbox.path().join("repo-b"), &["push"]);
+
+    // Sync only repo-a and repo-c
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .args(["sync", "--repo", "repo-a", "--repo", "repo-c"])
+        .current_dir(&ws_dir)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("repo-a"))
+        .stdout(predicate::str::contains("repo-c"))
+        .stdout(predicate::str::contains("repo-b").not());
+
+    // Verify repo-b was NOT synced
+    assert!(!ws_dir.join("repo-b").join("new-b.txt").exists());
+}
+
+#[test]
+fn sync_repo_filter_skips_drifted() {
+    let sandbox = common::TestSandbox::new();
+    let ws_dir = sandbox.create_workspace_with_repos("my-ws", &["repo-a", "repo-b"]);
+
+    // Drift repo-a
+    checkout_branch_in_worktree(&ws_dir.join("repo-a"), "wrong-branch");
+
+    // Sync with --repo targeting both — repo-a should show drift, repo-b should sync
+    let output = Command::cargo_bin("git-rig")
+        .unwrap()
+        .args(["sync", "--repo", "repo-a", "--repo", "repo-b"])
+        .current_dir(&ws_dir)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let stdout = String::from_utf8_lossy(&output);
+
+    assert!(stdout.contains("DRIFT"));
+    assert!(stdout.contains("repo-a"));
+    // repo-b should still sync
+    assert!(stdout.contains("ok"));
+}
+
+#[test]
+fn sync_repo_filter_scopes_drift_warnings() {
+    let sandbox = common::TestSandbox::new();
+    let ws_dir = sandbox.create_workspace_with_repos("my-ws", &["repo-a", "repo-b"]);
+
+    // Drift repo-a
+    checkout_branch_in_worktree(&ws_dir.join("repo-a"), "wrong-branch");
+
+    // Sync only repo-b — should NOT see drift warning for repo-a
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .args(["sync", "--repo", "repo-b"])
+        .current_dir(&ws_dir)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("DRIFT").not());
+}
+
+#[test]
+fn sync_repo_filter_detached_skipped() {
+    let sandbox = common::TestSandbox::new();
+    let ws_dir = sandbox.create_workspace("my-ws");
+    let repo_dir = sandbox.create_repo("repo-a");
+
+    // Add repo as detached
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .args(["add", &repo_dir.to_string_lossy(), "--detach"])
+        .current_dir(&ws_dir)
+        .assert()
+        .success();
+
+    // Sync with --repo targeting the detached repo
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .args(["sync", "--repo", "repo-a"])
+        .current_dir(&ws_dir)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("detached, skipped"));
+}
+
+// ---------------------------------------------------------------------------
+// branch conflict detection
+// ---------------------------------------------------------------------------
+
+#[test]
+fn add_branch_conflict_shows_worktree_location() {
+    let sandbox = common::TestSandbox::new();
+    let _ws_dir = sandbox.create_workspace_with_repos("my-ws", &["repo-a"]);
+    let repo_dir = sandbox.path().join("repo-a");
+
+    // Create a second workspace that tries to use the same branch
+    let ws2_dir = sandbox.create_workspace("my-ws2");
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .args([
+            "add",
+            "--branch",
+            "rig/my-ws", // same branch as first rig
+            repo_dir.to_str().unwrap(),
+        ])
+        .current_dir(&ws2_dir)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("already checked out"))
+        .stderr(predicate::str::contains("checked out in:"));
+}
+
+// ---------------------------------------------------------------------------
+// completions
+// ---------------------------------------------------------------------------
+
+#[test]
+fn completions_bash() {
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .args(["completions", "bash"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("_git-rig"));
+}
+
+#[test]
+fn completions_zsh() {
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .args(["completions", "zsh"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("#compdef git-rig"));
+}
+
+#[test]
+fn completions_fish() {
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .args(["completions", "fish"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("complete -c git-rig"));
+}
+
+#[test]
+fn completions_invalid_shell() {
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .args(["completions", "invalid"])
+        .assert()
+        .failure();
 }

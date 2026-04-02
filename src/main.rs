@@ -1,5 +1,6 @@
 use anyhow::Result;
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
+use clap_complete::Shell;
 
 mod commands;
 mod drift;
@@ -145,6 +146,10 @@ enum Commands {
         /// Rig name (optional if inside a rig)
         name: Option<String>,
 
+        /// Run only in specific repos (can be repeated)
+        #[arg(short, long = "repo", value_name = "REPO")]
+        repos: Vec<String>,
+
         /// Auto-stash uncommitted changes before rebasing
         #[arg(long)]
         stash: bool,
@@ -176,6 +181,15 @@ enum Commands {
         /// The command to run (must be preceded by --)
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
         cmd: Vec<String>,
+    },
+
+    /// Generate shell completions
+    #[command(
+        after_help = "Examples:\n  git rig completions bash > ~/.bash_completion.d/git-rig\n  git rig completions zsh > ~/.zfunc/_git-rig\n  git rig completions fish > ~/.config/fish/completions/git-rig.fish"
+    )]
+    Completions {
+        /// Shell to generate completions for
+        shell: Shell,
     },
 }
 
@@ -272,7 +286,7 @@ fn main() -> Result<()> {
         } => commands::destroy(&name, dry_run, yes, keep_branches),
         Commands::List => commands::list(),
         Commands::Status { name } => commands::status(name.as_deref()),
-        Commands::Sync { name, stash } => commands::sync(name.as_deref(), stash),
+        Commands::Sync { name, repos, stash } => commands::sync(name.as_deref(), &repos, stash),
         Commands::Refresh { name } => commands::refresh(name.as_deref()),
         Commands::Exec {
             rig,
@@ -280,6 +294,15 @@ fn main() -> Result<()> {
             fail_fast,
             cmd,
         } => commands::exec(rig.as_deref(), &repos, &cmd, fail_fast),
+        Commands::Completions { shell } => {
+            clap_complete::generate(
+                shell,
+                &mut Cli::command(),
+                "git-rig",
+                &mut std::io::stdout(),
+            );
+            Ok(())
+        }
     }
 }
 

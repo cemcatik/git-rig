@@ -147,6 +147,8 @@ Drift detection runs automatically on `status`, `sync`, `exec`, and `refresh`. N
 ```bash
 git rig sync              # all repos in current workspace
 git rig sync --stash      # auto-stash dirty repos before rebasing
+git rig sync --repo api-server              # sync only specific repo(s)
+git rig sync --repo api-server --repo web   # sync multiple
 ```
 
 ```
@@ -257,9 +259,18 @@ scripts/release.sh 0.2.0
 
 This bumps the version in `Cargo.toml`, updates `Cargo.lock`, commits, tags, and pushes. The tag push triggers the [release workflow](.github/workflows/release.yml) which builds binaries, creates a GitHub Release, and publishes the Homebrew formula.
 
+### Shell completions
+
+```bash
+git rig completions bash > ~/.bash_completion.d/git-rig
+git rig completions zsh > ~/.zfunc/_git-rig
+git rig completions fish > ~/.config/fish/completions/git-rig.fish
+git rig completions powershell > _git-rig.ps1
+```
+
 ## Things to know
 
-- A git branch can only be checked out in one worktree at a time. If `git rig add` fails with "already checked out", the branch exists in another worktree.
+- A git branch can only be checked out in one worktree at a time. If `git rig add` fails with "already checked out", the error tells you which worktree has the branch.
 - Default branch detection requires `origin/HEAD` (or `<remote>/HEAD`) to be set. For repos not created via `git clone`, run: `git remote set-head origin --auto`
 - `git rig destroy` force-removes worktrees. `git rig remove` does not — it fails on dirty worktrees unless `--force` is passed.
 - `--upstream` sets the branch that the worktree starts from and that `sync` rebases onto. The upstream branch must exist on the remote at add time. Git tracking and `git log` will reference the upstream ref.
