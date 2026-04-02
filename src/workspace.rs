@@ -116,6 +116,20 @@ impl Manifest {
     pub fn has_repo(&self, name: &str) -> bool {
         self.find_repo(name).is_some()
     }
+
+    /// Validate that all names in `filter` exist in this manifest.
+    pub fn validate_repo_filter(&self, filter: &[String]) -> Result<()> {
+        for r in filter {
+            if self.find_repo(r).is_none() {
+                return Err(crate::error::RigError::RepoNotInRig {
+                    repo: r.to_string(),
+                    rig: self.name.clone(),
+                }
+                .into());
+            }
+        }
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------

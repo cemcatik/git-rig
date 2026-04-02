@@ -727,8 +727,6 @@ pub fn status(name: Option<&str>) -> Result<()> {
             continue;
         }
 
-        // Reuse cached branch from drift check — if the worktree is reachable
-        // (not skipped above), check_drift always caches its branch.
         let branch = report
             .branches
             .get(&repo.name)
@@ -824,17 +822,7 @@ pub fn refresh(name: Option<&str>) -> Result<()> {
 #[allow(clippy::too_many_lines)]
 pub fn sync(name: Option<&str>, filter_repos: &[String], stash: bool) -> Result<()> {
     let (ws_dir, manifest) = workspace::resolve_workspace(name)?;
-
-    // Validate --repo filters against manifest
-    for r in filter_repos {
-        if manifest.find_repo(r).is_none() {
-            return Err(RigError::RepoNotInRig {
-                repo: r.to_string(),
-                rig: manifest.name.clone(),
-            }
-            .into());
-        }
-    }
+    manifest.validate_repo_filter(filter_repos)?;
 
     let report = drift::check_drift(&manifest, &ws_dir);
     drift::print_drift_warnings(&report, filter_repos, false);
@@ -907,8 +895,6 @@ pub fn sync(name: Option<&str>, filter_repos: &[String], stash: bool) -> Result<
         let effective = repo.effective_upstream();
         if git::rebase(&worktree_path, effective, &repo.remote).is_ok() {
             let after = git::rev_parse_short(&worktree_path, "HEAD").unwrap_or_default();
-            // Non-drifted repos are guaranteed to be on repo.branch (drift check confirmed it).
-            // Rebase doesn't change which branch is checked out, so repo.branch is still correct.
             let (_ahead, behind) =
                 git::ahead_behind(&worktree_path, &repo.branch, effective, &repo.remote);
 
@@ -1006,17 +992,7 @@ pub fn exec(
     fail_fast: bool,
 ) -> Result<()> {
     let (ws_dir, manifest) = workspace::resolve_workspace(name)?;
-
-    // Validate --repo filters against manifest
-    for r in filter_repos {
-        if manifest.find_repo(r).is_none() {
-            return Err(RigError::RepoNotInRig {
-                repo: r.to_string(),
-                rig: manifest.name.clone(),
-            }
-            .into());
-        }
-    }
+    manifest.validate_repo_filter(filter_repos)?;
 
     let report = drift::check_drift(&manifest, &ws_dir);
     drift::print_drift_warnings(&report, filter_repos, false);
