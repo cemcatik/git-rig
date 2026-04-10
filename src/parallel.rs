@@ -8,7 +8,6 @@ use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 pub struct RepoProgress<'a> {
     bar: &'a ProgressBar,
     is_tty: bool,
-    name: &'a str,
 }
 
 impl RepoProgress<'_> {
@@ -17,10 +16,6 @@ impl RepoProgress<'_> {
         if self.is_tty {
             self.bar.set_message(msg.to_string());
         }
-    }
-
-    pub fn repo_name(&self) -> &str {
-        self.name
     }
 }
 
@@ -72,9 +67,10 @@ where
         })
         .collect();
 
+    type ResultSlot<T> = std::sync::Mutex<Option<(String, Result<T, String>)>>;
+
     // Pre-allocate result slots — each worker writes to its own index (no contention)
-    let results: Vec<std::sync::Mutex<Option<(String, Result<T, String>)>>> =
-        names.iter().map(|_| std::sync::Mutex::new(None)).collect();
+    let results: Vec<ResultSlot<T>> = names.iter().map(|_| std::sync::Mutex::new(None)).collect();
 
     // Lock-free work queue: each worker atomically grabs the next index
     let next_index = AtomicUsize::new(0);
@@ -96,7 +92,6 @@ where
                     let progress = RepoProgress {
                         bar: &bars[idx],
                         is_tty,
-                        name: &names[idx],
                     };
 
                     let result = op(idx, &progress);

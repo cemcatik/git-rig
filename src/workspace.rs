@@ -143,6 +143,7 @@ impl Manifest {
     }
 
     /// Mutable variant for commands that update repo fields (e.g., refresh).
+    #[allow(dead_code)]
     pub fn repos_sorted_mut(&mut self) -> Vec<&mut RepoEntry> {
         let mut sorted: Vec<&mut RepoEntry> = self.repos.iter_mut().collect();
         sorted.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));

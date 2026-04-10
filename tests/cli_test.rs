@@ -2809,8 +2809,12 @@ fn doctor_empty_rig() {
 
 /// Helper: assert that `a` appears before `b` in `haystack`.
 fn assert_appears_before(haystack: &str, a: &str, b: &str) {
-    let pos_a = haystack.find(a).unwrap_or_else(|| panic!("'{a}' not found in output"));
-    let pos_b = haystack.find(b).unwrap_or_else(|| panic!("'{b}' not found in output"));
+    let pos_a = haystack
+        .find(a)
+        .unwrap_or_else(|| panic!("'{a}' not found in output"));
+    let pos_b = haystack
+        .find(b)
+        .unwrap_or_else(|| panic!("'{b}' not found in output"));
     assert!(
         pos_a < pos_b,
         "Expected '{a}' (pos {pos_a}) before '{b}' (pos {pos_b}) in output:\n{haystack}"
@@ -2884,4 +2888,122 @@ fn list_repos_in_alphabetical_order() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert_appears_before(&stdout, "repo-a", "repo-b");
     assert_appears_before(&stdout, "repo-b", "repo-c");
+}
+
+// ---------------------------------------------------------------------------
+// parallel execution
+// ---------------------------------------------------------------------------
+
+#[test]
+fn sync_parallel_all_repos_synced() {
+    let sandbox = common::TestSandbox::new();
+    let ws_dir = sandbox.create_workspace_with_repos("my-ws", &["repo-c", "repo-a", "repo-b"]);
+
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .args(["sync", "--jobs=2"])
+        .current_dir(&ws_dir)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("repo-a"))
+        .stdout(predicate::str::contains("repo-b"))
+        .stdout(predicate::str::contains("repo-c"))
+        .stdout(predicate::str::contains("All repos synced"));
+}
+
+#[test]
+fn sync_sequential_flag_works() {
+    let sandbox = common::TestSandbox::new();
+    let ws_dir = sandbox.create_workspace_with_repos("my-ws", &["repo-a", "repo-b"]);
+
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .args(["sync", "--jobs=1"])
+        .current_dir(&ws_dir)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("All repos synced"));
+}
+
+#[test]
+fn exec_parallel_all_repos_executed() {
+    let sandbox = common::TestSandbox::new();
+    let ws_dir = sandbox.create_workspace_with_repos("my-ws", &["repo-c", "repo-a", "repo-b"]);
+
+    let output = Command::cargo_bin("git-rig")
+        .unwrap()
+        .args(["exec", "--jobs=2", "--", "echo", "hello"])
+        .current_dir(&ws_dir)
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // All repos should appear in output
+    assert!(
+        stdout.contains("repo-a"),
+        "stdout missing repo-a:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("repo-b"),
+        "stdout missing repo-b:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("repo-c"),
+        "stdout missing repo-c:\n{stdout}"
+    );
+    // Output should contain "hello" for each repo
+    assert_eq!(
+        stdout.matches("hello").count(),
+        3,
+        "expected 3 'hello' in:\n{stdout}"
+    );
+}
+
+#[test]
+fn exec_parallel_preserves_alphabetical_order() {
+    let sandbox = common::TestSandbox::new();
+    let ws_dir = sandbox.create_workspace_with_repos("my-ws", &["repo-c", "repo-a", "repo-b"]);
+
+    let output = Command::cargo_bin("git-rig")
+        .unwrap()
+        .args(["exec", "--jobs=2", "--", "echo", "hello"])
+        .current_dir(&ws_dir)
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_appears_before(&stdout, "repo-a", "repo-b");
+    assert_appears_before(&stdout, "repo-b", "repo-c");
+}
+
+#[test]
+fn refresh_parallel_detects_branches() {
+    let sandbox = common::TestSandbox::new();
+    let ws_dir = sandbox.create_workspace_with_repos("my-ws", &["repo-a", "repo-b"]);
+
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .args(["refresh", "--jobs=2"])
+        .current_dir(&ws_dir)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("repo-a"))
+        .stdout(predicate::str::contains("repo-b"));
+}
+
+#[test]
+fn exec_parallel_fail_fast_with_all_launched() {
+    let sandbox = common::TestSandbox::new();
+    let ws_dir = sandbox.create_workspace_with_repos("my-ws", &["repo-a", "repo-b"]);
+
+    // With --jobs=2 and 2 repos, both launch simultaneously.
+    // --fail-fast still reports both failures since both were already running.
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .args(["exec", "--fail-fast", "--jobs=2", "--", "false"])
+        .current_dir(&ws_dir)
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("repo(s) had errors"));
 }

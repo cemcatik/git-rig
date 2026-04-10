@@ -19,10 +19,14 @@ const AUTO_JOBS_CAP: usize = 8;
 
 /// Resolve effective job count: CLI flag > manifest > auto.
 /// Returns 1 for sequential, >1 for parallel.
-pub(crate) fn resolve_jobs(cli_jobs: Option<usize>, manifest: &Manifest, repo_count: usize) -> usize {
+pub(crate) fn resolve_jobs(
+    cli_jobs: Option<usize>,
+    manifest: &Manifest,
+    repo_count: usize,
+) -> usize {
     let base = cli_jobs.unwrap_or_else(|| manifest.effective_jobs());
     if base == 0 {
-        repo_count.min(AUTO_JOBS_CAP).max(1)
+        repo_count.clamp(1, AUTO_JOBS_CAP)
     } else {
         base
     }
@@ -869,55 +873,48 @@ fn refresh_parallel(
         InProgress,
         Done(Result<(), String>),
     }
-    let fetch_cache: Mutex<HashMap<std::path::PathBuf, FetchState>> =
-        Mutex::new(HashMap::new());
+    let fetch_cache: Mutex<HashMap<std::path::PathBuf, FetchState>> = Mutex::new(HashMap::new());
 
     let repo_names: Vec<String> = active_repos.iter().map(|r| r.name.clone()).collect();
     let cancel = AtomicBool::new(false);
 
     // Each Ok result is (old_branch, new_branch)
-    let results = crate::parallel::run_parallel(
-        &repo_names,
-        jobs,
-        &cancel,
-        |idx, progress| {
-            let repo = &active_repos[idx];
+    let results = crate::parallel::run_parallel(&repo_names, jobs, &cancel, |idx, progress| {
+        let repo = &active_repos[idx];
 
-            // Fetch with deduplication
-            progress.set_status("fetching...");
-            let fetch_result = loop {
-                let mut cache = fetch_cache.lock().unwrap();
-                match cache.get(&repo.source) {
-                    Some(FetchState::Done(result)) => break result.clone(),
-                    Some(FetchState::InProgress) => {
-                        drop(cache);
-                        std::thread::sleep(std::time::Duration::from_millis(50));
-                        continue;
-                    }
-                    None => {
-                        cache.insert(repo.source.clone(), FetchState::InProgress);
-                        drop(cache);
-                        let result = git::fetch(&repo.source, &repo.remote)
-                            .map_err(|e| e.to_string());
-                        let mut cache = fetch_cache.lock().unwrap();
-                        cache.insert(repo.source.clone(), FetchState::Done(result.clone()));
-                        break result;
-                    }
+        // Fetch with deduplication
+        progress.set_status("fetching...");
+        let fetch_result = loop {
+            let mut cache = fetch_cache.lock().unwrap();
+            match cache.get(&repo.source) {
+                Some(FetchState::Done(result)) => break result.clone(),
+                Some(FetchState::InProgress) => {
+                    drop(cache);
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                    continue;
                 }
-            };
-
-            if let Err(e) = fetch_result {
-                return Err(format!("fetch failed: {e}"));
+                None => {
+                    cache.insert(repo.source.clone(), FetchState::InProgress);
+                    drop(cache);
+                    let result = git::fetch(&repo.source, &repo.remote).map_err(|e| e.to_string());
+                    let mut cache = fetch_cache.lock().unwrap();
+                    cache.insert(repo.source.clone(), FetchState::Done(result.clone()));
+                    break result;
+                }
             }
+        };
 
-            // Detect default branch
-            progress.set_status("detecting default branch...");
-            match git::default_branch(&repo.source, &repo.remote) {
-                Ok(new_branch) => Ok((repo.default_branch.clone(), new_branch)),
-                Err(e) => Err(format!("detect failed: {e}")),
-            }
-        },
-    );
+        if let Err(e) = fetch_result {
+            return Err(format!("fetch failed: {e}"));
+        }
+
+        // Detect default branch
+        progress.set_status("detecting default branch...");
+        match git::default_branch(&repo.source, &repo.remote) {
+            Ok(new_branch) => Ok((repo.default_branch.clone(), new_branch)),
+            Err(e) => Err(format!("detect failed: {e}")),
+        }
+    });
 
     // Sequential merge: apply updates to manifest
     let mut updated = false;
@@ -925,7 +922,12 @@ fn refresh_parallel(
         match result {
             Ok((old_branch, new_branch)) => {
                 if old_branch != new_branch {
-                    println!("  {}: {} → {}", name.bold(), old_branch.dimmed(), new_branch.green());
+                    println!(
+                        "  {}: {} → {}",
+                        name.bold(),
+                        old_branch.dimmed(),
+                        new_branch.green()
+                    );
                     if let Some(entry) = manifest.find_repo_mut(name) {
                         entry.default_branch = new_branch.clone();
                     }
@@ -959,7 +961,12 @@ fn refresh_parallel(
 // ---------------------------------------------------------------------------
 
 #[allow(clippy::too_many_lines)]
-pub fn sync(name: Option<&str>, filter_repos: &[String], stash: bool, cli_jobs: Option<usize>) -> Result<()> {
+pub fn sync(
+    name: Option<&str>,
+    filter_repos: &[String],
+    stash: bool,
+    cli_jobs: Option<usize>,
+) -> Result<()> {
     let (ws_dir, manifest) = workspace::resolve_workspace(name)?;
     manifest.validate_repo_filter(filter_repos)?;
 
@@ -1158,8 +1165,7 @@ fn sync_parallel(
         Done(Result<(), String>),
     }
 
-    let fetch_cache: Mutex<HashMap<std::path::PathBuf, FetchState>> =
-        Mutex::new(HashMap::new());
+    let fetch_cache: Mutex<HashMap<std::path::PathBuf, FetchState>> = Mutex::new(HashMap::new());
 
     // Track which sources we need to fetch (for dedup)
     let _unique_sources: HashSet<_> = active_repos.iter().map(|r| r.source.clone()).collect();
@@ -1210,8 +1216,7 @@ fn sync_parallel(
                     cache.insert(repo.source.clone(), FetchState::InProgress);
                     drop(cache);
 
-                    let result = git::fetch(&repo.source, &repo.remote)
-                        .map_err(|e| e.to_string());
+                    let result = git::fetch(&repo.source, &repo.remote).map_err(|e| e.to_string());
 
                     let mut cache = fetch_cache.lock().unwrap();
                     cache.insert(repo.source.clone(), FetchState::Done(result.clone()));
@@ -1556,7 +1561,15 @@ pub fn exec(
         return exec_sequential(&manifest, &ws_dir, &active_repos, cmd, fail_fast, &report);
     }
 
-    exec_parallel(&manifest, &ws_dir, &active_repos, cmd, fail_fast, jobs, &report)
+    exec_parallel(
+        &manifest,
+        &ws_dir,
+        &active_repos,
+        cmd,
+        fail_fast,
+        jobs,
+        &report,
+    )
 }
 
 fn exec_sequential(
@@ -1631,64 +1644,56 @@ fn exec_parallel(
     let cancel = AtomicBool::new(false);
 
     // Each Ok result contains (stdout, stderr)
-    let results = crate::parallel::run_parallel(
-        &repo_names,
-        jobs,
-        &cancel,
-        |idx, progress| {
-            let repo = active_repos[idx];
-            let worktree_path = manifest.worktree_dir(ws_dir, &repo.name);
+    let results = crate::parallel::run_parallel(&repo_names, jobs, &cancel, |idx, progress| {
+        let repo = active_repos[idx];
+        let worktree_path = manifest.worktree_dir(ws_dir, &repo.name);
 
-            if report.has_worktree_unavailable(&repo.name) {
-                progress.set_status("unavailable, skipped");
-                return Ok((String::new(), String::new()));
-            }
+        if report.has_worktree_unavailable(&repo.name) {
+            progress.set_status("unavailable, skipped");
+            return Ok((String::new(), String::new()));
+        }
 
-            progress.set_status("running...");
+        progress.set_status("running...");
 
-            let output = Command::new(&cmd[0])
-                .args(&cmd[1..])
-                .current_dir(&worktree_path)
-                .output();
+        let output = Command::new(&cmd[0])
+            .args(&cmd[1..])
+            .current_dir(&worktree_path)
+            .output();
 
-            match output {
-                Ok(o) => {
-                    let stdout = String::from_utf8_lossy(&o.stdout).to_string();
-                    let stderr = String::from_utf8_lossy(&o.stderr).to_string();
+        match output {
+            Ok(o) => {
+                let stdout = String::from_utf8_lossy(&o.stdout).to_string();
+                let stderr = String::from_utf8_lossy(&o.stderr).to_string();
 
-                    if o.status.success() {
-                        Ok((stdout, stderr))
-                    } else {
-                        let code = o.status.code().unwrap_or(-1);
-                        if fail_fast {
-                            cancel.store(true, std::sync::atomic::Ordering::Relaxed);
-                        }
-                        Err(format!("exit code {code}"))
-                    }
-                }
-                Err(e) => {
+                if o.status.success() {
+                    Ok((stdout, stderr))
+                } else {
+                    let code = o.status.code().unwrap_or(-1);
                     if fail_fast {
                         cancel.store(true, std::sync::atomic::Ordering::Relaxed);
                     }
-                    Err(format!("failed to execute: {e}"))
+                    Err(format!("exit code {code}"))
                 }
             }
-        },
-    );
+            Err(e) => {
+                if fail_fast {
+                    cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+                Err(format!("failed to execute: {e}"))
+            }
+        }
+    });
 
     // Print captured output in alphabetical order
     for (name, result) in &results {
         println!("{} {}", ">>>".bold(), name.bold());
-        match result {
-            Ok((stdout, stderr)) => {
-                if !stdout.is_empty() {
-                    print!("{stdout}");
-                }
-                if !stderr.is_empty() {
-                    eprint!("{stderr}");
-                }
+        if let Ok((stdout, stderr)) = result {
+            if !stdout.is_empty() {
+                print!("{stdout}");
             }
-            Err(_) => {} // Error printed in summary below
+            if !stderr.is_empty() {
+                eprint!("{stderr}");
+            }
         }
         println!();
     }
