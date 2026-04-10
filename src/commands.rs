@@ -12,6 +12,23 @@ use crate::provision::{self, ProvisionOpts};
 use crate::workspace::{self, Manifest, RepoEntry};
 
 // ---------------------------------------------------------------------------
+// parallel job resolution
+// ---------------------------------------------------------------------------
+
+const AUTO_JOBS_CAP: usize = 8;
+
+/// Resolve effective job count: CLI flag > manifest > auto.
+/// Returns 1 for sequential, >1 for parallel.
+pub(crate) fn resolve_jobs(cli_jobs: Option<usize>, manifest: &Manifest, repo_count: usize) -> usize {
+    let base = cli_jobs.unwrap_or_else(|| manifest.effective_jobs());
+    if base == 0 {
+        repo_count.min(AUTO_JOBS_CAP).max(1)
+    } else {
+        base
+    }
+}
+
+// ---------------------------------------------------------------------------
 // create
 // ---------------------------------------------------------------------------
 
@@ -765,7 +782,7 @@ pub fn status(name: Option<&str>) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 #[allow(clippy::if_not_else)]
-pub fn refresh(name: Option<&str>) -> Result<()> {
+pub fn refresh(name: Option<&str>, _cli_jobs: Option<usize>) -> Result<()> {
     let (ws_dir, mut manifest) = workspace::resolve_workspace(name)?;
 
     let report = drift::check_drift(&manifest, &ws_dir);
@@ -822,7 +839,7 @@ pub fn refresh(name: Option<&str>) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 #[allow(clippy::too_many_lines)]
-pub fn sync(name: Option<&str>, filter_repos: &[String], stash: bool) -> Result<()> {
+pub fn sync(name: Option<&str>, filter_repos: &[String], stash: bool, _cli_jobs: Option<usize>) -> Result<()> {
     let (ws_dir, manifest) = workspace::resolve_workspace(name)?;
     manifest.validate_repo_filter(filter_repos)?;
 
@@ -1230,6 +1247,7 @@ pub fn exec(
     filter_repos: &[String],
     cmd: &[String],
     fail_fast: bool,
+    _cli_jobs: Option<usize>,
 ) -> Result<()> {
     let (ws_dir, manifest) = workspace::resolve_workspace(name)?;
     manifest.validate_repo_filter(filter_repos)?;
@@ -1290,4 +1308,55 @@ pub fn exec(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_jobs_auto_caps_at_8() {
+        let m = Manifest::new("ws");
+        assert_eq!(resolve_jobs(None, &m, 20), 8);
+    }
+
+    #[test]
+    fn resolve_jobs_auto_uses_repo_count_when_small() {
+        let m = Manifest::new("ws");
+        assert_eq!(resolve_jobs(None, &m, 3), 3);
+    }
+
+    #[test]
+    fn resolve_jobs_auto_minimum_is_1() {
+        let m = Manifest::new("ws");
+        assert_eq!(resolve_jobs(None, &m, 0), 1);
+    }
+
+    #[test]
+    fn resolve_jobs_cli_overrides_manifest() {
+        let mut m = Manifest::new("ws");
+        m.jobs = Some(4);
+        assert_eq!(resolve_jobs(Some(2), &m, 10), 2);
+    }
+
+    #[test]
+    fn resolve_jobs_manifest_overrides_auto() {
+        let mut m = Manifest::new("ws");
+        m.jobs = Some(4);
+        assert_eq!(resolve_jobs(None, &m, 10), 4);
+    }
+
+    #[test]
+    fn resolve_jobs_zero_means_auto() {
+        let mut m = Manifest::new("ws");
+        m.jobs = Some(0);
+        assert_eq!(resolve_jobs(None, &m, 5), 5);
+    }
+
+    #[test]
+    fn resolve_jobs_cli_1_forces_sequential() {
+        let mut m = Manifest::new("ws");
+        m.jobs = Some(4);
+        assert_eq!(resolve_jobs(Some(1), &m, 10), 1);
+    }
 }

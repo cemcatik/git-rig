@@ -13,6 +13,9 @@ pub struct Manifest {
     #[serde(default, skip_serializing)]
     base_dir: Option<PathBuf>,
     pub repos: Vec<RepoEntry>,
+    /// Default parallelism for multi-repo commands. None = auto.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jobs: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -48,6 +51,7 @@ impl Manifest {
             name: name.to_string(),
             base_dir: None,
             repos: Vec::new(),
+            jobs: None,
         }
     }
 
@@ -143,6 +147,11 @@ impl Manifest {
         let mut sorted: Vec<&mut RepoEntry> = self.repos.iter_mut().collect();
         sorted.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
         sorted
+    }
+
+    /// Resolve the manifest-level job count. Returns 0 for "auto" (no preference).
+    pub fn effective_jobs(&self) -> usize {
+        self.jobs.unwrap_or(0)
     }
 }
 
@@ -541,6 +550,63 @@ mod tests {
         let mut entry = make_repo_entry("repo-a");
         entry.upstream = Some("integration".to_string());
         assert_eq!(entry.effective_upstream(), "integration");
+    }
+
+    #[test]
+    fn effective_jobs_returns_zero_when_none() {
+        let m = Manifest::new("ws");
+        assert_eq!(m.effective_jobs(), 0);
+    }
+
+    #[test]
+    fn effective_jobs_returns_value_when_set() {
+        let mut m = Manifest::new("ws");
+        m.jobs = Some(4);
+        assert_eq!(m.effective_jobs(), 4);
+    }
+
+    #[test]
+    fn serde_jobs_defaults_to_none_when_missing() {
+        let tmp = TempDir::new().unwrap();
+        let ws_dir = tmp.path().canonicalize().unwrap();
+
+        let json = serde_json::json!({
+            "name": "my-ws",
+            "repos": []
+        });
+        std::fs::write(
+            ws_dir.join(".rig.json"),
+            serde_json::to_string_pretty(&json).unwrap(),
+        )
+        .unwrap();
+
+        let loaded = Manifest::load(&ws_dir).unwrap();
+        assert_eq!(loaded.jobs, None);
+    }
+
+    #[test]
+    fn serde_jobs_preserved_when_set() {
+        let tmp = TempDir::new().unwrap();
+        let ws_dir = tmp.path().canonicalize().unwrap();
+
+        let mut m = Manifest::new("my-ws");
+        m.jobs = Some(4);
+        m.save(&ws_dir).unwrap();
+
+        let loaded = Manifest::load(&ws_dir).unwrap();
+        assert_eq!(loaded.jobs, Some(4));
+    }
+
+    #[test]
+    fn serde_jobs_omitted_from_json_when_none() {
+        let tmp = TempDir::new().unwrap();
+        let ws_dir = tmp.path().canonicalize().unwrap();
+
+        let m = Manifest::new("my-ws");
+        m.save(&ws_dir).unwrap();
+
+        let raw = std::fs::read_to_string(ws_dir.join(".rig.json")).unwrap();
+        assert!(!raw.contains("jobs"));
     }
 
     #[test]

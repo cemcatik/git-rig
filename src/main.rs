@@ -153,12 +153,20 @@ enum Commands {
         /// Auto-stash uncommitted changes before rebasing
         #[arg(long)]
         stash: bool,
+
+        /// Number of parallel jobs (default: auto, -j1 for sequential)
+        #[arg(short, long)]
+        jobs: Option<usize>,
     },
 
     /// Re-detect default branches from remotes and update the manifest
     Refresh {
         /// Rig name (optional if inside a rig)
         name: Option<String>,
+
+        /// Number of parallel jobs (default: auto, -j1 for sequential)
+        #[arg(short, long)]
+        jobs: Option<usize>,
     },
 
     /// Run a command in every repo worktree (use -- before the command)
@@ -177,6 +185,10 @@ enum Commands {
         /// Stop at the first repo whose command fails
         #[arg(long)]
         fail_fast: bool,
+
+        /// Number of parallel jobs (default: auto, -j1 for sequential)
+        #[arg(short, long)]
+        jobs: Option<usize>,
 
         /// The command to run (must be preceded by --)
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
@@ -292,14 +304,20 @@ fn main() -> Result<()> {
         } => commands::destroy(&name, dry_run, yes, keep_branches),
         Commands::List => commands::list(),
         Commands::Status { name } => commands::status(name.as_deref()),
-        Commands::Sync { name, repos, stash } => commands::sync(name.as_deref(), &repos, stash),
-        Commands::Refresh { name } => commands::refresh(name.as_deref()),
+        Commands::Sync {
+            name,
+            repos,
+            stash,
+            jobs,
+        } => commands::sync(name.as_deref(), &repos, stash, jobs),
+        Commands::Refresh { name, jobs } => commands::refresh(name.as_deref(), jobs),
         Commands::Exec {
             rig,
             repos,
             fail_fast,
+            jobs,
             cmd,
-        } => commands::exec(rig.as_deref(), &repos, &cmd, fail_fast),
+        } => commands::exec(rig.as_deref(), &repos, &cmd, fail_fast, jobs),
         Commands::Doctor { name } => commands::doctor(name.as_deref()),
         Commands::Completions { shell } => {
             clap_complete::generate(
