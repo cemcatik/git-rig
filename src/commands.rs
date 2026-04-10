@@ -782,21 +782,39 @@ pub fn status(name: Option<&str>) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 #[allow(clippy::if_not_else)]
-pub fn refresh(name: Option<&str>, _cli_jobs: Option<usize>) -> Result<()> {
+pub fn refresh(name: Option<&str>, cli_jobs: Option<usize>) -> Result<()> {
     let (ws_dir, mut manifest) = workspace::resolve_workspace(name)?;
 
     let report = drift::check_drift(&manifest, &ws_dir);
     drift::print_drift_warnings(&report, &[], true);
 
+    // Collect active repos by cloning (avoids borrow conflict with mut manifest)
+    let active_repos: Vec<RepoEntry> = manifest
+        .repos_sorted()
+        .into_iter()
+        .filter(|repo| !report.has_source_missing(&repo.name))
+        .cloned()
+        .collect();
+
+    let jobs = resolve_jobs(cli_jobs, &manifest, active_repos.len());
+
     println!("Refreshing rig '{}'\n", manifest.name.bold());
 
+    if jobs <= 1 {
+        return refresh_sequential(&mut manifest, &ws_dir, &active_repos);
+    }
+
+    refresh_parallel(&mut manifest, &ws_dir, &active_repos, jobs)
+}
+
+fn refresh_sequential(
+    manifest: &mut Manifest,
+    ws_dir: &std::path::Path,
+    active_repos: &[RepoEntry],
+) -> Result<()> {
     let mut updated = false;
 
-    for repo in manifest.repos_sorted_mut() {
-        if report.has_source_missing(&repo.name) {
-            continue;
-        }
-
+    for repo in active_repos {
         print!("  {}: ", repo.name.bold());
 
         if let Err(e) = git::fetch(&repo.source, &repo.remote) {
@@ -808,7 +826,9 @@ pub fn refresh(name: Option<&str>, _cli_jobs: Option<usize>) -> Result<()> {
             Ok(new_branch) => {
                 if new_branch != repo.default_branch {
                     println!("{} → {}", repo.default_branch.dimmed(), new_branch.green());
-                    repo.default_branch = new_branch;
+                    if let Some(entry) = manifest.find_repo_mut(&repo.name) {
+                        entry.default_branch = new_branch;
+                    }
                     updated = true;
                 } else {
                     println!("{} (unchanged)", repo.default_branch.dimmed());
@@ -821,7 +841,107 @@ pub fn refresh(name: Option<&str>, _cli_jobs: Option<usize>) -> Result<()> {
     }
 
     if updated {
-        manifest.save(&ws_dir)?;
+        manifest.save(ws_dir)?;
+    }
+
+    println!();
+    if updated {
+        println!("{} Refreshed rig '{}'", "ok".green(), manifest.name);
+    } else {
+        println!("{} All default branches already up to date", "ok".green());
+    }
+
+    Ok(())
+}
+
+fn refresh_parallel(
+    manifest: &mut Manifest,
+    ws_dir: &std::path::Path,
+    active_repos: &[RepoEntry],
+    jobs: usize,
+) -> Result<()> {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    use std::sync::atomic::AtomicBool;
+
+    // Fetch deduplication (same pattern as sync)
+    enum FetchState {
+        InProgress,
+        Done(Result<(), String>),
+    }
+    let fetch_cache: Mutex<HashMap<std::path::PathBuf, FetchState>> =
+        Mutex::new(HashMap::new());
+
+    let repo_names: Vec<String> = active_repos.iter().map(|r| r.name.clone()).collect();
+    let cancel = AtomicBool::new(false);
+
+    // Each Ok result is (old_branch, new_branch)
+    let results = crate::parallel::run_parallel(
+        &repo_names,
+        jobs,
+        &cancel,
+        |idx, progress| {
+            let repo = &active_repos[idx];
+
+            // Fetch with deduplication
+            progress.set_status("fetching...");
+            let fetch_result = loop {
+                let mut cache = fetch_cache.lock().unwrap();
+                match cache.get(&repo.source) {
+                    Some(FetchState::Done(result)) => break result.clone(),
+                    Some(FetchState::InProgress) => {
+                        drop(cache);
+                        std::thread::sleep(std::time::Duration::from_millis(50));
+                        continue;
+                    }
+                    None => {
+                        cache.insert(repo.source.clone(), FetchState::InProgress);
+                        drop(cache);
+                        let result = git::fetch(&repo.source, &repo.remote)
+                            .map_err(|e| e.to_string());
+                        let mut cache = fetch_cache.lock().unwrap();
+                        cache.insert(repo.source.clone(), FetchState::Done(result.clone()));
+                        break result;
+                    }
+                }
+            };
+
+            if let Err(e) = fetch_result {
+                return Err(format!("fetch failed: {e}"));
+            }
+
+            // Detect default branch
+            progress.set_status("detecting default branch...");
+            match git::default_branch(&repo.source, &repo.remote) {
+                Ok(new_branch) => Ok((repo.default_branch.clone(), new_branch)),
+                Err(e) => Err(format!("detect failed: {e}")),
+            }
+        },
+    );
+
+    // Sequential merge: apply updates to manifest
+    let mut updated = false;
+    for (name, result) in &results {
+        match result {
+            Ok((old_branch, new_branch)) => {
+                if old_branch != new_branch {
+                    println!("  {}: {} → {}", name.bold(), old_branch.dimmed(), new_branch.green());
+                    if let Some(entry) = manifest.find_repo_mut(name) {
+                        entry.default_branch = new_branch.clone();
+                    }
+                    updated = true;
+                } else {
+                    println!("  {}: {} (unchanged)", name.bold(), old_branch.dimmed());
+                }
+            }
+            Err(e) => {
+                println!("  {}: {} ({e})", name.bold(), "ERR".red());
+            }
+        }
+    }
+
+    if updated {
+        manifest.save(ws_dir)?;
     }
 
     println!();
