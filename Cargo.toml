@@ -16,6 +16,7 @@ serde_json = "1"
 anyhow = "1"
 thiserror = "2"
 colored = "3"
+indicatif = { version = "0.18", default-features = false, features = ["unicode-width"] }
 ignore = "0.4"
 walkdir = "2"
 

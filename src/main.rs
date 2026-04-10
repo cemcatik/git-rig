@@ -6,6 +6,7 @@ mod commands;
 mod drift;
 mod error;
 mod git;
+mod parallel;
 mod provision;
 mod workspace;
 
