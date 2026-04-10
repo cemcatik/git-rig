@@ -766,7 +766,9 @@ fn sync_dirty_skip() {
         .current_dir(&ws_dir)
         .assert()
         .success()
-        .stdout(predicate::str::contains("SKIP"));
+        .stdout(predicate::str::contains("WARN"))
+        .stdout(predicate::str::contains("dirty — skipped"))
+        .stdout(predicate::str::contains("--stash"));
 }
 
 #[test]

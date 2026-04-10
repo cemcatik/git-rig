@@ -935,6 +935,39 @@ fn refresh_parallel(
 // sync
 // ---------------------------------------------------------------------------
 
+/// Sentinel value returned by the parallel sync closure for dirty-skipped repos.
+/// Used to distinguish dirty skips from real successes in the result display.
+const DIRTY_SENTINEL: &str = "[dirty]";
+
+fn print_sync_summary(dirty_skipped: &[String], errors: &[(String, String)]) -> Result<()> {
+    println!();
+    if !dirty_skipped.is_empty() {
+        println!(
+            "{} {} repo(s) skipped (dirty — use {} to auto-stash):",
+            "WARN".yellow(),
+            dirty_skipped.len(),
+            "--stash".bold()
+        );
+        for name in dirty_skipped {
+            println!("  {} {}", "WARN".yellow(), name);
+        }
+        if !errors.is_empty() {
+            println!();
+        }
+    }
+    if !errors.is_empty() {
+        println!("{} {} repo(s) had issues:", "WARN".yellow(), errors.len());
+        for (name, err) in errors {
+            println!("  {} {}: {}", "ERR".red(), name, err);
+        }
+        return Err(anyhow!("{} repo(s) had issues", errors.len()));
+    }
+    if dirty_skipped.is_empty() {
+        println!("{} All repos synced", "ok".green());
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_lines)]
 pub fn sync(
     name: Option<&str>,
@@ -981,6 +1014,7 @@ fn sync_sequential(
     stash: bool,
 ) -> Result<()> {
     let mut errors: Vec<(String, String)> = Vec::new();
+    let mut dirty_skipped: Vec<String> = Vec::new();
 
     for repo in active_repos {
         let worktree_path = manifest.worktree_dir(ws_dir, &repo.name);
@@ -1008,10 +1042,11 @@ fn sync_sequential(
             }
         } else if dirty {
             println!(
-                "  {} {} (dirty — use --stash to auto-stash)",
-                "SKIP".yellow(),
+                "  {} {} (dirty — skipped)",
+                "WARN".yellow(),
                 repo.name.bold()
             );
+            dirty_skipped.push(repo.name.clone());
             continue;
         }
 
@@ -1108,18 +1143,7 @@ fn sync_sequential(
         }
     }
 
-    println!();
-    if errors.is_empty() {
-        println!("{} All repos synced", "ok".green());
-    } else {
-        println!("{} {} repo(s) had issues:", "WARN".yellow(), errors.len());
-        for (name, err) in &errors {
-            println!("  {} {}: {}", "ERR".red(), name, err);
-        }
-        return Err(anyhow!("{} repo(s) had issues", errors.len()));
-    }
-
-    Ok(())
+    print_sync_summary(&dirty_skipped, &errors)
 }
 
 fn sync_parallel(
@@ -1159,7 +1183,7 @@ fn sync_parallel(
             }
         } else if dirty {
             progress.set_status("dirty, skipped");
-            return Ok("dirty — use --stash to auto-stash".to_string());
+            return Ok(DIRTY_SENTINEL.to_string());
         }
 
         let before = git::rev_parse_short(&worktree_path, "HEAD").unwrap_or_default();
@@ -1225,8 +1249,13 @@ fn sync_parallel(
 
     // Print per-repo results to stdout (mirrors sequential output)
     let mut errors: Vec<(String, String)> = Vec::new();
+    let mut dirty_skipped: Vec<String> = Vec::new();
     for (name, result) in &results {
         match result {
+            Ok(msg) if msg == DIRTY_SENTINEL => {
+                println!("  {} {} (dirty — skipped)", "WARN".yellow(), name.bold());
+                dirty_skipped.push(name.clone());
+            }
             Ok(msg) => println!("  {} {} {}", "ok".green(), name.bold(), msg),
             Err(e) => {
                 println!("  {} {} ({e})", "ERR".red(), name.bold());
@@ -1235,18 +1264,7 @@ fn sync_parallel(
         }
     }
 
-    println!();
-    if errors.is_empty() {
-        println!("{} All repos synced", "ok".green());
-    } else {
-        println!("{} {} repo(s) had issues:", "WARN".yellow(), errors.len());
-        for (name, err) in &errors {
-            println!("  {} {}: {}", "ERR".red(), name, err);
-        }
-        return Err(anyhow!("{} repo(s) had issues", errors.len()));
-    }
-
-    Ok(())
+    print_sync_summary(&dirty_skipped, &errors)
 }
 
 // ---------------------------------------------------------------------------
