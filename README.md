@@ -145,10 +145,12 @@ Drift detection runs automatically on `status`, `sync`, `exec`, and `refresh`. N
 ### Sync (fetch + rebase)
 
 ```bash
-git rig sync              # all repos in current workspace
+git rig sync              # all repos in current workspace (parallel by default)
 git rig sync --stash      # auto-stash dirty repos before rebasing
 git rig sync --repo api-server              # sync only specific repo(s)
 git rig sync --repo api-server --repo web   # sync multiple
+git rig sync -j1          # force sequential execution
+git rig sync --jobs=4     # limit to 4 parallel workers
 ```
 
 ```
@@ -166,10 +168,11 @@ Repos with drift (branch mismatch, unexpected detached HEAD, missing source) are
 ### Run a command across repos
 
 ```bash
-git rig exec -- git status                # run in all repos
+git rig exec -- git status                # run in all repos (parallel by default)
 git rig exec --repo api-server -- make    # run in specific repo(s)
 git rig exec --fail-fast -- cargo test    # stop on first failure
 git rig exec -w my-feature -- git pull    # target a workspace by name
+git rig exec -j1 -- make build           # force sequential (streams output live)
 ```
 
 ### Refresh default branches
@@ -211,6 +214,7 @@ Each workspace is a directory containing a `.rig.json` manifest:
 ```json
 {
   "name": "my-feature",
+  "jobs": 4,
   "repos": [
     {
       "name": "api-server",
@@ -223,6 +227,8 @@ Each workspace is a directory containing a `.rig.json` manifest:
   ]
 }
 ```
+
+`upstream` and `jobs` are optional. `jobs` sets the default parallelism for `sync`, `exec`, and `refresh` (override per-invocation with `--jobs N`). Repos are always processed in alphabetical order.
 
 - Each repo entry stores the absolute `source` path to the local git clone
 - `upstream` is optional — when set, the worktree starts from this branch and `sync` rebases onto it instead of `default_branch`

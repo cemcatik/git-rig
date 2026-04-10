@@ -15,11 +15,12 @@ cargo build --release          # release build
 
 ## Architecture
 
-Single-binary Rust CLI. Seven source files:
+Single-binary Rust CLI:
 
 - `src/main.rs` — CLI definition (clap derive), dispatch
 - `src/commands.rs` — Command implementations (create, add, remove, destroy, list, status, sync, refresh, exec, doctor, completions)
 - `src/drift.rs` — Manifest/reality drift detection: checks worktree existence, branch match, and source repo accessibility before commands run
+- `src/parallel.rs` — Parallel execution engine (`run_parallel`) and fetch deduplication (`FetchCache`). Uses `std::thread::scope` + `indicatif` `MultiProgress` for live-updating spinner display.
 - `src/provision.rs` — `.riginclude` file parsing, pattern matching, and file provisioning (copy/symlink)
 - `src/workspace.rs` — Manifest types (`.rig.json`), workspace resolution from CWD
 - `src/git.rs` — Git operations (shells out to `git`, not libgit2)
@@ -37,6 +38,9 @@ A pre-commit hook is auto-installed into `.git/hooks/` on the first `cargo build
 - **`create --from`** clones a rig by creating new worktrees for each source repo. Pre-validates source paths; `--skip` excludes invalid repos instead of failing. Post-validation failures (branch conflicts, fetch errors) use continue-and-report. Detached repos stay detached. Upstream and remote config are inherited per-repo.
 - **`add` doubles as update** — re-running `add` with `--upstream` on an existing repo updates the upstream field instead of erroring. `--no-upstream` clears it.
 - **Default branch naming**: `rig/<workspace-name>` when `--branch` is not specified.
+- **Alphabetical repo ordering**: All multi-repo commands process repos in case-insensitive alphabetical order by name. Sorting is applied at iteration time via `Manifest::repos_sorted()`, not at storage time — `.rig.json` preserves insertion order for `git diff` stability.
+- **Parallel execution**: `sync`, `exec`, and `refresh` run repo operations in parallel by default. Auto worker count = `min(repo_count, 8)`. `--jobs N` / `-j N` overrides; `-j1` forces sequential. Optional `jobs` field in `.rig.json` sets a workspace default (CLI overrides manifest). Live-updating spinner display via `indicatif` `MultiProgress` in TTY mode; line-by-line fallback for piped output. Sequential path (`-j1`) preserves exact pre-parallel output behavior.
+- **Fetch deduplication**: `FetchCache` in `parallel.rs` ensures each unique `(source_path, remote)` pair is fetched exactly once during parallel sync/refresh, even when multiple repos share the same source clone. Uses `Condvar` for efficient waiting (no spin-loop).
 - **`sync` conflict strategy**: fetch + rebase onto the effective upstream (custom if set, otherwise default branch), abort on conflict (don't leave repo in broken state). `--stash` flag for auto-stashing dirty worktrees. `--repo` flag filters to specific repos (same pattern as `exec`).
 - **Branch conflict detection**: When `add` fails because a branch is already checked out, the error message includes the path of the worktree that holds the conflicting branch (via `git worktree list --porcelain` parsing).
 - **Shell completions**: `git rig completions <shell>` generates completion scripts for bash, zsh, fish, and PowerShell via `clap_complete`.
@@ -57,9 +61,11 @@ just coverage                       # generate lcov coverage report
 ```
 
 Test structure:
-- `src/workspace.rs` (inline `#[cfg(test)]`) — Manifest CRUD, save/load roundtrip, migration, serde defaults, upstream config, workspace resolution via `_from` variants
+- `src/workspace.rs` (inline `#[cfg(test)]`) — Manifest CRUD, save/load roundtrip, migration, serde defaults, upstream config, jobs config, sorted iteration, workspace resolution via `_from` variants
+- `src/commands.rs` (inline `#[cfg(test)]`) — `resolve_jobs` unit tests (auto-cap, CLI override, manifest default, sequential)
+- `src/parallel.rs` (inline `#[cfg(test)]`) — `run_parallel` unit tests (ordering, cancellation, empty input, error collection) and `FetchCache` tests (dedup, different remotes, error propagation, concurrent access)
 - `tests/git_test.rs` — Branch detection, worktree add/remove, dirty checks, ahead/behind, stash, rebase
-- `tests/cli_test.rs` — All subcommands end-to-end via `assert_cmd`, including upstream set/update/clear flows, drift detection (branch mismatch, missing worktree/source, detached HEAD, --repo filter scoping), and doctor (env checks, per-repo health, missing source/worktree, branch mismatch, origin/HEAD, remote reachability, upstream existence)
+- `tests/cli_test.rs` — All subcommands end-to-end via `assert_cmd`, including upstream set/update/clear flows, drift detection (branch mismatch, missing worktree/source, detached HEAD, --repo filter scoping), doctor (env checks, per-repo health, missing source/worktree, branch mismatch, origin/HEAD, remote reachability, upstream existence), alphabetical ordering, parallel execution (--jobs, shared-source dedup, fail-fast, manifest jobs field)
 - `tests/common/mod.rs` — `TestSandbox` fixture: creates temp dirs with bare+clone repos, worktrees, and workspaces
 
 Each test creates its own `TestSandbox` (temp dir) — no shared state, no CWD mutation. The `_from` variants (`resolve_workspace_from`, `resolve_base_dir_from`, `create_from`, `destroy_from`) accept a start directory so tests avoid `chdir`.
