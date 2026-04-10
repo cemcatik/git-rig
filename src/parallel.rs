@@ -183,6 +183,14 @@ where
         }
     });
 
+    // Mark cancelled (unstarted) bars so they don't remain in "queued" state
+    for (i, slot) in results.iter().enumerate() {
+        if slot.lock().unwrap().is_none() {
+            bars[i].set_style(failure_style());
+            bars[i].abandon_with_message("cancelled".to_string());
+        }
+    }
+
     // Collect in order (all slots should be filled, or skipped by cancellation)
     results
         .into_iter()
@@ -193,4 +201,182 @@ where
                 .or_else(|| Some((names[i].clone(), Err("cancelled".to_string()))))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::AtomicBool;
+
+    fn names(n: usize) -> Vec<String> {
+        (0..n).map(|i| format!("item-{i}")).collect()
+    }
+
+    #[test]
+    fn run_parallel_returns_results_in_order() {
+        let items = names(5);
+        let cancel = AtomicBool::new(false);
+
+        let results = run_parallel(&items, 3, &cancel, |idx, _progress| Ok(idx));
+
+        assert_eq!(results.len(), 5);
+        for (i, (name, result)) in results.iter().enumerate() {
+            assert_eq!(name, &format!("item-{i}"));
+            assert_eq!(result.as_ref().unwrap(), &i);
+        }
+    }
+
+    #[test]
+    fn run_parallel_empty_input() {
+        let items: Vec<String> = vec![];
+        let cancel = AtomicBool::new(false);
+
+        let results = run_parallel::<(), _>(&items, 4, &cancel, |_idx, _progress| Ok(()));
+
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn run_parallel_more_jobs_than_items() {
+        let items = names(2);
+        let cancel = AtomicBool::new(false);
+
+        let results = run_parallel(&items, 10, &cancel, |idx, _progress| Ok(idx));
+
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].1.as_ref().unwrap(), &0);
+        assert_eq!(results[1].1.as_ref().unwrap(), &1);
+    }
+
+    #[test]
+    fn run_parallel_cancellation_prevents_work() {
+        let items = names(10);
+        let cancel = AtomicBool::new(false);
+        let completed = AtomicUsize::new(0);
+
+        let results = run_parallel(&items, 1, &cancel, |idx, _progress| {
+            // Cancel after the first item completes
+            if idx == 0 {
+                cancel.store(true, Ordering::Relaxed);
+            }
+            completed.fetch_add(1, Ordering::Relaxed);
+            Ok(idx)
+        });
+
+        assert_eq!(results.len(), 10);
+        // First item should succeed
+        assert!(results[0].1.is_ok());
+        // With 1 worker, cancellation should prevent most remaining items
+        let done_count = completed.load(Ordering::Relaxed);
+        assert!(
+            done_count < 10,
+            "Expected cancellation to prevent some items, but all {done_count} completed"
+        );
+        // Cancelled items should have Err("cancelled")
+        let cancelled_count = results.iter().filter(|(_, r)| r.is_err()).count();
+        assert!(cancelled_count > 0, "Expected some cancelled items");
+    }
+
+    #[test]
+    fn run_parallel_collects_errors() {
+        let items = names(3);
+        let cancel = AtomicBool::new(false);
+
+        let results = run_parallel(&items, 2, &cancel, |idx, _progress| {
+            if idx == 1 {
+                Err("something failed".to_string())
+            } else {
+                Ok(idx)
+            }
+        });
+
+        assert_eq!(results.len(), 3);
+        assert!(results[0].1.is_ok());
+        assert_eq!(results[1].1.as_ref().unwrap_err(), "something failed");
+        assert!(results[2].1.is_ok());
+    }
+
+    #[test]
+    fn fetch_cache_deduplicates_same_key() {
+        let cache = FetchCache::new();
+        let call_count = AtomicUsize::new(0);
+
+        // First call should execute the closure
+        let r1 = cache.fetch_once(Path::new("/repo"), "origin", || {
+            call_count.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        });
+        assert!(r1.is_ok());
+        assert_eq!(call_count.load(Ordering::Relaxed), 1);
+
+        // Second call with same key should return cached result
+        let r2 = cache.fetch_once(Path::new("/repo"), "origin", || {
+            call_count.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        });
+        assert!(r2.is_ok());
+        assert_eq!(call_count.load(Ordering::Relaxed), 1); // Still 1 — cached
+    }
+
+    #[test]
+    fn fetch_cache_different_remotes_are_independent() {
+        let cache = FetchCache::new();
+        let call_count = AtomicUsize::new(0);
+
+        cache
+            .fetch_once(Path::new("/repo"), "origin", || {
+                call_count.fetch_add(1, Ordering::Relaxed);
+                Ok(())
+            })
+            .unwrap();
+
+        cache
+            .fetch_once(Path::new("/repo"), "upstream", || {
+                call_count.fetch_add(1, Ordering::Relaxed);
+                Ok(())
+            })
+            .unwrap();
+
+        // Both should have executed — different remotes
+        assert_eq!(call_count.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn fetch_cache_propagates_errors() {
+        let cache = FetchCache::new();
+
+        let r1 = cache.fetch_once(Path::new("/repo"), "origin", || {
+            Err("network error".to_string())
+        });
+        assert_eq!(r1.unwrap_err(), "network error");
+
+        // Second call should return the cached error, not retry
+        let r2 = cache.fetch_once(Path::new("/repo"), "origin", || Ok(()));
+        assert_eq!(r2.unwrap_err(), "network error");
+    }
+
+    #[test]
+    fn fetch_cache_concurrent_same_key() {
+        let cache = FetchCache::new();
+        let call_count = AtomicUsize::new(0);
+
+        // Spawn multiple threads all requesting the same key
+        thread::scope(|s| {
+            for _ in 0..4 {
+                s.spawn(|| {
+                    cache
+                        .fetch_once(Path::new("/repo"), "origin", || {
+                            // Simulate slow fetch
+                            thread::sleep(Duration::from_millis(50));
+                            call_count.fetch_add(1, Ordering::Relaxed);
+                            Ok(())
+                        })
+                        .unwrap();
+                });
+            }
+        });
+
+        // Only one thread should have actually fetched
+        assert_eq!(call_count.load(Ordering::Relaxed), 1);
+    }
 }

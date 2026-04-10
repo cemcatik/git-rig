@@ -3007,3 +3007,98 @@ fn exec_parallel_fail_fast_with_all_launched() {
         .failure()
         .stdout(predicate::str::contains("repo(s) had errors"));
 }
+
+#[test]
+fn sync_parallel_shared_source_dedup() {
+    // Two repos sharing the same source clone should sync without lock errors
+    let sandbox = common::TestSandbox::new();
+    let ws_dir = sandbox.create_workspace("my-ws");
+    let repo_dir = sandbox.create_repo("shared-source");
+
+    // Directly write the manifest with two repos sharing the same source
+    let manifest_path = ws_dir.join(".rig.json");
+    let source_str = repo_dir.to_str().unwrap();
+
+    // Create two worktrees from the same source with different branches
+    for name in &["view-a", "view-b"] {
+        let branch = format!("rig/{name}");
+        let wt_path = ws_dir.join(name);
+        let wt_str = wt_path.to_str().unwrap();
+
+        common::git(
+            &repo_dir,
+            &["worktree", "add", "-b", &branch, wt_str, "origin/main"],
+        );
+    }
+
+    // Write manifest JSON directly (avoids needing Manifest/RepoEntry types)
+    let manifest_json = serde_json::json!({
+        "name": "my-ws",
+        "repos": [
+            {
+                "name": "view-a",
+                "source": source_str,
+                "branch": "rig/view-a",
+                "default_branch": "main",
+                "remote": "origin"
+            },
+            {
+                "name": "view-b",
+                "source": source_str,
+                "branch": "rig/view-b",
+                "default_branch": "main",
+                "remote": "origin"
+            }
+        ]
+    });
+    std::fs::write(
+        &manifest_path,
+        serde_json::to_string_pretty(&manifest_json).unwrap(),
+    )
+    .unwrap();
+
+    // Sync with parallelism — should deduplicate fetch and succeed
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .args(["sync", "--jobs=2"])
+        .current_dir(&ws_dir)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("view-a"))
+        .stdout(predicate::str::contains("view-b"))
+        .stdout(predicate::str::contains("All repos synced"));
+}
+
+#[test]
+fn manifest_jobs_field_affects_execution() {
+    let sandbox = common::TestSandbox::new();
+    let ws_dir = sandbox.create_workspace_with_repos("my-ws", &["repo-a", "repo-b"]);
+
+    // Write jobs: 1 directly into the manifest to force sequential
+    let manifest_path = ws_dir.join(".rig.json");
+    let content = std::fs::read_to_string(&manifest_path).unwrap();
+    let mut json: serde_json::Value = serde_json::from_str(&content).unwrap();
+    json["jobs"] = serde_json::Value::from(1);
+    std::fs::write(&manifest_path, serde_json::to_string_pretty(&json).unwrap()).unwrap();
+
+    // Run exec without --jobs flag — should use manifest value (sequential)
+    // Sequential exec prints ">>> repo-name" headers with inherited stdout
+    let output = Command::cargo_bin("git-rig")
+        .unwrap()
+        .args(["exec", "--", "echo", "hello"])
+        .current_dir(&ws_dir)
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Sequential mode prints >>> headers
+    assert!(
+        stdout.contains(">>> repo-a"),
+        "expected sequential output with >>> header"
+    );
+    assert!(
+        stdout.contains(">>> repo-b"),
+        "expected sequential output with >>> header"
+    );
+}
