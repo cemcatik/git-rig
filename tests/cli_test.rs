@@ -2801,3 +2801,86 @@ fn doctor_empty_rig() {
         .success()
         .stdout(predicate::str::contains("No repos"));
 }
+
+// ---------------------------------------------------------------------------
+// alphabetical ordering
+// ---------------------------------------------------------------------------
+
+/// Helper: assert that `a` appears before `b` in `haystack`.
+fn assert_appears_before(haystack: &str, a: &str, b: &str) {
+    let pos_a = haystack.find(a).unwrap_or_else(|| panic!("'{a}' not found in output"));
+    let pos_b = haystack.find(b).unwrap_or_else(|| panic!("'{b}' not found in output"));
+    assert!(
+        pos_a < pos_b,
+        "Expected '{a}' (pos {pos_a}) before '{b}' (pos {pos_b}) in output:\n{haystack}"
+    );
+}
+
+#[test]
+fn status_repos_in_alphabetical_order() {
+    let sandbox = common::TestSandbox::new();
+    // Add repos in non-alphabetical order
+    let ws_dir = sandbox.create_workspace_with_repos("my-ws", &["repo-c", "repo-a", "repo-b"]);
+
+    let output = Command::cargo_bin("git-rig")
+        .unwrap()
+        .arg("status")
+        .current_dir(&ws_dir)
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_appears_before(&stdout, "repo-a", "repo-b");
+    assert_appears_before(&stdout, "repo-b", "repo-c");
+}
+
+#[test]
+fn sync_repos_in_alphabetical_order() {
+    let sandbox = common::TestSandbox::new();
+    let ws_dir = sandbox.create_workspace_with_repos("my-ws", &["repo-c", "repo-a", "repo-b"]);
+
+    let output = Command::cargo_bin("git-rig")
+        .unwrap()
+        .arg("sync")
+        .current_dir(&ws_dir)
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_appears_before(&stdout, "repo-a", "repo-b");
+    assert_appears_before(&stdout, "repo-b", "repo-c");
+}
+
+#[test]
+fn exec_repos_in_alphabetical_order() {
+    let sandbox = common::TestSandbox::new();
+    let ws_dir = sandbox.create_workspace_with_repos("my-ws", &["repo-c", "repo-a", "repo-b"]);
+
+    let output = Command::cargo_bin("git-rig")
+        .unwrap()
+        .args(["exec", "--", "echo", "hello"])
+        .current_dir(&ws_dir)
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_appears_before(&stdout, "repo-a", "repo-b");
+    assert_appears_before(&stdout, "repo-b", "repo-c");
+}
+
+#[test]
+fn list_repos_in_alphabetical_order() {
+    let sandbox = common::TestSandbox::new();
+    let ws_dir = sandbox.create_workspace_with_repos("my-ws", &["repo-c", "repo-a", "repo-b"]);
+
+    let output = Command::cargo_bin("git-rig")
+        .unwrap()
+        .arg("list")
+        .current_dir(&ws_dir)
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_appears_before(&stdout, "repo-a", "repo-b");
+    assert_appears_before(&stdout, "repo-b", "repo-c");
+}

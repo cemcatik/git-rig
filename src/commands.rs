@@ -78,7 +78,7 @@ fn create_from_source(
     let mut valid_entries = Vec::new();
     let mut invalid_entries: Vec<(String, String)> = Vec::new();
 
-    for entry in &source_manifest.repos {
+    for entry in source_manifest.repos_sorted() {
         if !entry.source.exists() {
             invalid_entries.push((
                 entry.name.clone(),
@@ -132,6 +132,8 @@ fn create_from_source(
 
     // Add each repo from the source rig
     let mut errors: Vec<(String, String)> = Vec::new();
+
+    valid_entries.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
 
     for entry in &valid_entries {
         let detach = entry.branch == git::DETACHED;
@@ -583,7 +585,7 @@ pub fn destroy_from(
             manifest.repos.len()
         );
 
-        for repo in &manifest.repos {
+        for repo in manifest.repos_sorted() {
             let worktree_path = manifest.worktree_dir(&ws_dir, &repo.name);
 
             if worktree_path.exists() {
@@ -617,7 +619,7 @@ pub fn destroy_from(
 
     let mut failed = 0usize;
 
-    for repo in &manifest.repos {
+    for repo in manifest.repos_sorted() {
         let worktree_path = manifest.worktree_dir(&ws_dir, &repo.name);
 
         if worktree_path.exists() {
@@ -682,7 +684,7 @@ pub fn list() -> Result<()> {
 
     for ws in &workspaces {
         println!("  {} ({} repos)", ws.name.bold(), ws.repos.len());
-        for repo in &ws.repos {
+        for repo in ws.repos_sorted() {
             if let Some(ref upstream) = repo.upstream {
                 println!(
                     "    {} on {} {} {}",
@@ -717,7 +719,7 @@ pub fn status(name: Option<&str>) -> Result<()> {
         return Ok(());
     }
 
-    for repo in &manifest.repos {
+    for repo in manifest.repos_sorted() {
         let worktree_path = manifest.worktree_dir(&ws_dir, &repo.name);
 
         print!("  {}", repo.name.bold());
@@ -773,7 +775,7 @@ pub fn refresh(name: Option<&str>) -> Result<()> {
 
     let mut updated = false;
 
-    for repo in &mut manifest.repos {
+    for repo in manifest.repos_sorted_mut() {
         if report.has_source_missing(&repo.name) {
             continue;
         }
@@ -831,7 +833,7 @@ pub fn sync(name: Option<&str>, filter_repos: &[String], stash: bool) -> Result<
 
     let mut errors: Vec<(String, String)> = Vec::new();
 
-    for repo in &manifest.repos {
+    for repo in manifest.repos_sorted() {
         // Skip repos not in the filter
         if !filter_repos.is_empty() && !filter_repos.iter().any(|f| f == &repo.name) {
             continue;
@@ -1068,7 +1070,7 @@ pub fn doctor(name: Option<&str>) -> Result<()> {
     // Run drift detection to reuse for R5a-R5e
     let drift_report = drift::check_drift(&manifest, &ws_dir);
 
-    for repo in &manifest.repos {
+    for repo in manifest.repos_sorted() {
         println!("  {}", repo.name.bold());
 
         let worktree_path = manifest.worktree_dir(&ws_dir, &repo.name);
@@ -1237,7 +1239,7 @@ pub fn exec(
 
     let mut errors: Vec<(String, String)> = Vec::new();
 
-    for repo in &manifest.repos {
+    for repo in manifest.repos_sorted() {
         // Skip repos not in the filter
         if !filter_repos.is_empty() && !filter_repos.iter().any(|f| f == &repo.name) {
             continue;

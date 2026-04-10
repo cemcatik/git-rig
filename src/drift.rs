@@ -71,7 +71,7 @@ pub fn check_drift(manifest: &Manifest, ws_dir: &Path) -> DriftReport {
     let mut drifts = Vec::new();
     let mut branches = HashMap::new();
 
-    for repo in &manifest.repos {
+    for repo in manifest.repos_sorted() {
         let worktree_path = manifest.worktree_dir(ws_dir, &repo.name);
 
         // Missing worktree

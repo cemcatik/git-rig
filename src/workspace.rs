@@ -130,6 +130,20 @@ impl Manifest {
         }
         Ok(())
     }
+
+    /// Repos sorted case-insensitively by name (for display and execution).
+    pub fn repos_sorted(&self) -> Vec<&RepoEntry> {
+        let mut sorted: Vec<&RepoEntry> = self.repos.iter().collect();
+        sorted.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        sorted
+    }
+
+    /// Mutable variant for commands that update repo fields (e.g., refresh).
+    pub fn repos_sorted_mut(&mut self) -> Vec<&mut RepoEntry> {
+        let mut sorted: Vec<&mut RepoEntry> = self.repos.iter_mut().collect();
+        sorted.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        sorted
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -543,6 +557,51 @@ mod tests {
     fn find_repo_mut_not_found() {
         let mut m = Manifest::new("ws");
         assert!(m.find_repo_mut("nonexistent").is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // Sorted iteration
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn repos_sorted_returns_case_insensitive_alphabetical_order() {
+        let mut m = Manifest::new("ws");
+        m.add_repo(make_repo_entry("zebra"));
+        m.add_repo(make_repo_entry("alpha"));
+        m.add_repo(make_repo_entry("Middle"));
+
+        let sorted: Vec<&str> = m.repos_sorted().iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(sorted, vec!["alpha", "Middle", "zebra"]);
+    }
+
+    #[test]
+    fn repos_sorted_mut_allows_mutation() {
+        let mut m = Manifest::new("ws");
+        m.add_repo(make_repo_entry("beta"));
+        m.add_repo(make_repo_entry("alpha"));
+
+        let mut sorted = m.repos_sorted_mut();
+        assert_eq!(sorted[0].name, "alpha");
+        sorted[0].default_branch = "develop".to_string();
+
+        // Verify mutation went through to the original vec
+        assert_eq!(m.find_repo("alpha").unwrap().default_branch, "develop");
+    }
+
+    #[test]
+    fn repos_sorted_does_not_change_storage_order() {
+        let mut m = Manifest::new("ws");
+        m.add_repo(make_repo_entry("charlie"));
+        m.add_repo(make_repo_entry("alpha"));
+        m.add_repo(make_repo_entry("bravo"));
+
+        // Call sorted (should not mutate)
+        let _ = m.repos_sorted();
+
+        // Storage order should still be insertion order
+        assert_eq!(m.repos[0].name, "charlie");
+        assert_eq!(m.repos[1].name, "alpha");
+        assert_eq!(m.repos[2].name, "bravo");
     }
 
     // -----------------------------------------------------------------------
