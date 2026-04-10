@@ -141,19 +141,6 @@ impl Manifest {
         sorted.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
         sorted
     }
-
-    /// Mutable variant for commands that update repo fields (e.g., refresh).
-    #[allow(dead_code)]
-    pub fn repos_sorted_mut(&mut self) -> Vec<&mut RepoEntry> {
-        let mut sorted: Vec<&mut RepoEntry> = self.repos.iter_mut().collect();
-        sorted.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
-        sorted
-    }
-
-    /// Resolve the manifest-level job count. Returns 0 for "auto" (no preference).
-    pub fn effective_jobs(&self) -> usize {
-        self.jobs.unwrap_or(0)
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -554,19 +541,6 @@ mod tests {
     }
 
     #[test]
-    fn effective_jobs_returns_zero_when_none() {
-        let m = Manifest::new("ws");
-        assert_eq!(m.effective_jobs(), 0);
-    }
-
-    #[test]
-    fn effective_jobs_returns_value_when_set() {
-        let mut m = Manifest::new("ws");
-        m.jobs = Some(4);
-        assert_eq!(m.effective_jobs(), 4);
-    }
-
-    #[test]
     fn serde_jobs_defaults_to_none_when_missing() {
         let tmp = TempDir::new().unwrap();
         let ws_dir = tmp.path().canonicalize().unwrap();
@@ -639,20 +613,6 @@ mod tests {
 
         let sorted: Vec<&str> = m.repos_sorted().iter().map(|r| r.name.as_str()).collect();
         assert_eq!(sorted, vec!["alpha", "Middle", "zebra"]);
-    }
-
-    #[test]
-    fn repos_sorted_mut_allows_mutation() {
-        let mut m = Manifest::new("ws");
-        m.add_repo(make_repo_entry("beta"));
-        m.add_repo(make_repo_entry("alpha"));
-
-        let mut sorted = m.repos_sorted_mut();
-        assert_eq!(sorted[0].name, "alpha");
-        sorted[0].default_branch = "develop".to_string();
-
-        // Verify mutation went through to the original vec
-        assert_eq!(m.find_repo("alpha").unwrap().default_branch, "develop");
     }
 
     #[test]

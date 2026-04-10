@@ -1,8 +1,70 @@
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Condvar, Mutex};
 use std::thread;
 use std::time::Duration;
 
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+
+// ---------------------------------------------------------------------------
+// Fetch deduplication
+// ---------------------------------------------------------------------------
+
+/// Ensures each unique (source_path, remote) pair is fetched exactly once,
+/// even when multiple worker threads request it concurrently.
+pub struct FetchCache {
+    state: Mutex<HashMap<(PathBuf, String), FetchState>>,
+    done: Condvar,
+}
+
+enum FetchState {
+    InProgress,
+    Done(Result<(), String>),
+}
+
+impl FetchCache {
+    pub fn new() -> Self {
+        Self {
+            state: Mutex::new(HashMap::new()),
+            done: Condvar::new(),
+        }
+    }
+
+    /// Fetch the given source+remote exactly once. Concurrent callers with the
+    /// same key block until the first caller's fetch completes, then share the result.
+    pub fn fetch_once(
+        &self,
+        source: &Path,
+        remote: &str,
+        do_fetch: impl FnOnce() -> Result<(), String>,
+    ) -> Result<(), String> {
+        let key = (source.to_path_buf(), remote.to_string());
+        let mut cache = self.state.lock().unwrap();
+
+        loop {
+            match cache.get(&key) {
+                Some(FetchState::Done(result)) => return result.clone(),
+                Some(FetchState::InProgress) => {
+                    // Wait for the fetching thread to signal completion
+                    cache = self.done.wait(cache).unwrap();
+                }
+                None => {
+                    // We'll do the fetch
+                    cache.insert(key.clone(), FetchState::InProgress);
+                    drop(cache);
+
+                    let result = do_fetch();
+
+                    let mut cache = self.state.lock().unwrap();
+                    cache.insert(key, FetchState::Done(result.clone()));
+                    self.done.notify_all();
+                    return result;
+                }
+            }
+        }
+    }
+}
 
 /// Progress handle passed to per-repo operation closures.
 pub struct RepoProgress<'a> {

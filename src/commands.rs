@@ -24,7 +24,7 @@ pub(crate) fn resolve_jobs(
     manifest: &Manifest,
     repo_count: usize,
 ) -> usize {
-    let base = cli_jobs.unwrap_or_else(|| manifest.effective_jobs());
+    let base = cli_jobs.unwrap_or_else(|| manifest.jobs.unwrap_or(0));
     if base == 0 {
         repo_count.clamp(1, AUTO_JOBS_CAP)
     } else {
@@ -151,10 +151,8 @@ fn create_from_source(
         valid_entries.len()
     );
 
-    // Add each repo from the source rig
+    // Add each repo from the source rig (already sorted via repos_sorted())
     let mut errors: Vec<(String, String)> = Vec::new();
-
-    valid_entries.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
 
     for entry in &valid_entries {
         let detach = entry.branch == git::DETACHED;
@@ -864,16 +862,9 @@ fn refresh_parallel(
     active_repos: &[RepoEntry],
     jobs: usize,
 ) -> Result<()> {
-    use std::collections::HashMap;
-    use std::sync::Mutex;
     use std::sync::atomic::AtomicBool;
 
-    // Fetch deduplication (same pattern as sync)
-    enum FetchState {
-        InProgress,
-        Done(Result<(), String>),
-    }
-    let fetch_cache: Mutex<HashMap<std::path::PathBuf, FetchState>> = Mutex::new(HashMap::new());
+    let fetch_cache = crate::parallel::FetchCache::new();
 
     let repo_names: Vec<String> = active_repos.iter().map(|r| r.name.clone()).collect();
     let cancel = AtomicBool::new(false);
@@ -882,27 +873,11 @@ fn refresh_parallel(
     let results = crate::parallel::run_parallel(&repo_names, jobs, &cancel, |idx, progress| {
         let repo = &active_repos[idx];
 
-        // Fetch with deduplication
+        // Fetch with deduplication per (source, remote) pair
         progress.set_status("fetching...");
-        let fetch_result = loop {
-            let mut cache = fetch_cache.lock().unwrap();
-            match cache.get(&repo.source) {
-                Some(FetchState::Done(result)) => break result.clone(),
-                Some(FetchState::InProgress) => {
-                    drop(cache);
-                    std::thread::sleep(std::time::Duration::from_millis(50));
-                    continue;
-                }
-                None => {
-                    cache.insert(repo.source.clone(), FetchState::InProgress);
-                    drop(cache);
-                    let result = git::fetch(&repo.source, &repo.remote).map_err(|e| e.to_string());
-                    let mut cache = fetch_cache.lock().unwrap();
-                    cache.insert(repo.source.clone(), FetchState::Done(result.clone()));
-                    break result;
-                }
-            }
-        };
+        let fetch_result = fetch_cache.fetch_once(&repo.source, &repo.remote, || {
+            git::fetch(&repo.source, &repo.remote).map_err(|e| e.to_string())
+        });
 
         if let Err(e) = fetch_result {
             return Err(format!("fetch failed: {e}"));
@@ -1154,21 +1129,9 @@ fn sync_parallel(
     stash: bool,
     jobs: usize,
 ) -> Result<()> {
-    use std::collections::{HashMap, HashSet};
-    use std::sync::Mutex;
     use std::sync::atomic::AtomicBool;
 
-    // Deduplicate fetches: track which source paths have been fetched
-    // Using InProgress/Done pattern to avoid concurrent git fetch on the same repo
-    enum FetchState {
-        InProgress,
-        Done(Result<(), String>),
-    }
-
-    let fetch_cache: Mutex<HashMap<std::path::PathBuf, FetchState>> = Mutex::new(HashMap::new());
-
-    // Track which sources we need to fetch (for dedup)
-    let _unique_sources: HashSet<_> = active_repos.iter().map(|r| r.source.clone()).collect();
+    let fetch_cache = crate::parallel::FetchCache::new();
 
     let repo_names: Vec<String> = active_repos.iter().map(|r| r.name.clone()).collect();
 
@@ -1201,29 +1164,11 @@ fn sync_parallel(
 
         let before = git::rev_parse_short(&worktree_path, "HEAD").unwrap_or_default();
 
-        // Fetch with deduplication: ensure only one thread fetches per source
+        // Fetch with deduplication per (source, remote) pair
         progress.set_status("fetching...");
-        let fetch_result = loop {
-            let mut cache = fetch_cache.lock().unwrap();
-            match cache.get(&repo.source) {
-                Some(FetchState::Done(result)) => break result.clone(),
-                Some(FetchState::InProgress) => {
-                    drop(cache);
-                    std::thread::sleep(std::time::Duration::from_millis(50));
-                    continue;
-                }
-                None => {
-                    cache.insert(repo.source.clone(), FetchState::InProgress);
-                    drop(cache);
-
-                    let result = git::fetch(&repo.source, &repo.remote).map_err(|e| e.to_string());
-
-                    let mut cache = fetch_cache.lock().unwrap();
-                    cache.insert(repo.source.clone(), FetchState::Done(result.clone()));
-                    break result;
-                }
-            }
-        };
+        let fetch_result = fetch_cache.fetch_once(&repo.source, &repo.remote, || {
+            git::fetch(&repo.source, &repo.remote).map_err(|e| e.to_string())
+        });
 
         if let Err(e) = fetch_result {
             if stashed {
@@ -1237,6 +1182,8 @@ fn sync_parallel(
         let effective = repo.effective_upstream();
         if git::rebase(&worktree_path, effective, &repo.remote).is_ok() {
             let after = git::rev_parse_short(&worktree_path, "HEAD").unwrap_or_default();
+            let (_ahead, behind) =
+                git::ahead_behind(&worktree_path, &repo.branch, effective, &repo.remote);
 
             let moved = if before == after {
                 "already up to date".to_string()
@@ -1244,14 +1191,28 @@ fn sync_parallel(
                 format!("{before} -> {after}")
             };
 
+            let behind_info = if behind > 0 {
+                format!(" (still {behind} behind)")
+            } else {
+                String::new()
+            };
+
+            let upstream_info = if repo.upstream.is_some() {
+                format!(" (upstream: {effective})")
+            } else {
+                String::new()
+            };
+
+            let detail = format!("{moved}{behind_info}{upstream_info}");
+
             if stashed {
                 progress.set_status("restoring stash...");
                 if let Err(e) = git::stash_pop(&worktree_path) {
-                    return Ok(format!("{moved} (stash pop failed: {e})"));
+                    return Ok(format!("{detail} (stash pop failed: {e})"));
                 }
-                Ok(format!("{moved} (stash restored)"))
+                Ok(format!("{detail} (stash restored)"))
             } else {
-                Ok(moved)
+                Ok(detail)
             }
         } else {
             let _ = git::rebase_abort(&worktree_path);
@@ -1287,10 +1248,6 @@ fn sync_parallel(
 
     Ok(())
 }
-
-// ---------------------------------------------------------------------------
-// exec
-// ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
 // doctor
@@ -1643,14 +1600,14 @@ fn exec_parallel(
     let repo_names: Vec<String> = active_repos.iter().map(|r| r.name.clone()).collect();
     let cancel = AtomicBool::new(false);
 
-    // Each Ok result contains (stdout, stderr)
+    // Each result is (stdout, stderr, Option<error_msg>)
     let results = crate::parallel::run_parallel(&repo_names, jobs, &cancel, |idx, progress| {
         let repo = active_repos[idx];
         let worktree_path = manifest.worktree_dir(ws_dir, &repo.name);
 
         if report.has_worktree_unavailable(&repo.name) {
             progress.set_status("unavailable, skipped");
-            return Ok((String::new(), String::new()));
+            return Err("worktree unavailable, skipped".to_string());
         }
 
         progress.set_status("running...");
@@ -1666,48 +1623,51 @@ fn exec_parallel(
                 let stderr = String::from_utf8_lossy(&o.stderr).to_string();
 
                 if o.status.success() {
-                    Ok((stdout, stderr))
+                    Ok((stdout, stderr, None))
                 } else {
                     let code = o.status.code().unwrap_or(-1);
                     if fail_fast {
                         cancel.store(true, std::sync::atomic::Ordering::Relaxed);
                     }
-                    Err(format!("exit code {code}"))
+                    Ok((stdout, stderr, Some(format!("exit code {code}"))))
                 }
             }
             Err(e) => {
                 if fail_fast {
                     cancel.store(true, std::sync::atomic::Ordering::Relaxed);
                 }
-                Err(format!("failed to execute: {e}"))
+                Ok((
+                    String::new(),
+                    String::new(),
+                    Some(format!("failed to execute: {e}")),
+                ))
             }
         }
     });
 
     // Print captured output in alphabetical order
+    let mut errors: Vec<(String, String)> = Vec::new();
     for (name, result) in &results {
         println!("{} {}", ">>>".bold(), name.bold());
-        if let Ok((stdout, stderr)) = result {
-            if !stdout.is_empty() {
-                print!("{stdout}");
+        match result {
+            Ok((stdout, stderr, error)) => {
+                if !stdout.is_empty() {
+                    print!("{stdout}");
+                }
+                if !stderr.is_empty() {
+                    eprint!("{stderr}");
+                }
+                if let Some(e) = error {
+                    errors.push((name.clone(), e.clone()));
+                }
             }
-            if !stderr.is_empty() {
-                eprint!("{stderr}");
+            Err(e) => {
+                // Skipped repos (e.g., unavailable worktree)
+                println!("{} {e}", "WARN".yellow());
             }
         }
         println!();
     }
-
-    let errors: Vec<(String, String)> = results
-        .iter()
-        .filter_map(|(name, result)| {
-            if let Err(e) = result {
-                Some((name.clone(), e.clone()))
-            } else {
-                None
-            }
-        })
-        .collect();
 
     if !errors.is_empty() {
         println!("{} {} repo(s) had errors:", "WARN".yellow(), errors.len());
