@@ -839,29 +839,49 @@ pub fn refresh(name: Option<&str>, _cli_jobs: Option<usize>) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 #[allow(clippy::too_many_lines)]
-pub fn sync(name: Option<&str>, filter_repos: &[String], stash: bool, _cli_jobs: Option<usize>) -> Result<()> {
+pub fn sync(name: Option<&str>, filter_repos: &[String], stash: bool, cli_jobs: Option<usize>) -> Result<()> {
     let (ws_dir, manifest) = workspace::resolve_workspace(name)?;
     manifest.validate_repo_filter(filter_repos)?;
 
     let report = drift::check_drift(&manifest, &ws_dir);
     drift::print_drift_warnings(&report, filter_repos, false);
 
+    // Collect active repos (sorted, filtered, non-drifted, non-detached)
+    let active_repos: Vec<&RepoEntry> = manifest
+        .repos_sorted()
+        .into_iter()
+        .filter(|repo| {
+            if !filter_repos.is_empty() && !filter_repos.iter().any(|f| f == &repo.name) {
+                return false;
+            }
+            if report.has_any_drift(&repo.name) {
+                return false;
+            }
+            true
+        })
+        .collect();
+
+    let jobs = resolve_jobs(cli_jobs, &manifest, active_repos.len());
+
     println!("Syncing rig '{}'\n", manifest.name.bold());
 
+    if jobs <= 1 {
+        return sync_sequential(&manifest, &ws_dir, &active_repos, stash);
+    }
+
+    sync_parallel(&manifest, &ws_dir, &active_repos, stash, jobs)
+}
+
+fn sync_sequential(
+    manifest: &Manifest,
+    ws_dir: &std::path::Path,
+    active_repos: &[&RepoEntry],
+    stash: bool,
+) -> Result<()> {
     let mut errors: Vec<(String, String)> = Vec::new();
 
-    for repo in manifest.repos_sorted() {
-        // Skip repos not in the filter
-        if !filter_repos.is_empty() && !filter_repos.iter().any(|f| f == &repo.name) {
-            continue;
-        }
-
-        // Skip any repo with drift — the warning block already informed the user
-        if report.has_any_drift(&repo.name) {
-            continue;
-        }
-
-        let worktree_path = manifest.worktree_dir(&ws_dir, &repo.name);
+    for repo in active_repos {
+        let worktree_path = manifest.worktree_dir(ws_dir, &repo.name);
 
         if repo.branch == git::DETACHED {
             println!(
@@ -983,6 +1003,149 @@ pub fn sync(name: Option<&str>, filter_repos: &[String], stash: bool, _cli_jobs:
                 repo.name.bold()
             );
             errors.push((repo.name.clone(), "rebase conflict".to_string()));
+        }
+    }
+
+    println!();
+    if errors.is_empty() {
+        println!("{} All repos synced", "ok".green());
+    } else {
+        println!("{} {} repo(s) had issues:", "WARN".yellow(), errors.len());
+        for (name, err) in &errors {
+            println!("  {} {}: {}", "ERR".red(), name, err);
+        }
+        return Err(anyhow!("{} repo(s) had issues", errors.len()));
+    }
+
+    Ok(())
+}
+
+fn sync_parallel(
+    manifest: &Manifest,
+    ws_dir: &std::path::Path,
+    active_repos: &[&RepoEntry],
+    stash: bool,
+    jobs: usize,
+) -> Result<()> {
+    use std::collections::{HashMap, HashSet};
+    use std::sync::Mutex;
+    use std::sync::atomic::AtomicBool;
+
+    // Deduplicate fetches: track which source paths have been fetched
+    // Using InProgress/Done pattern to avoid concurrent git fetch on the same repo
+    enum FetchState {
+        InProgress,
+        Done(Result<(), String>),
+    }
+
+    let fetch_cache: Mutex<HashMap<std::path::PathBuf, FetchState>> =
+        Mutex::new(HashMap::new());
+
+    // Track which sources we need to fetch (for dedup)
+    let _unique_sources: HashSet<_> = active_repos.iter().map(|r| r.source.clone()).collect();
+
+    let repo_names: Vec<String> = active_repos.iter().map(|r| r.name.clone()).collect();
+
+    let cancel = AtomicBool::new(false);
+
+    let results = crate::parallel::run_parallel(&repo_names, jobs, &cancel, |idx, progress| {
+        let repo = active_repos[idx];
+        let worktree_path = manifest.worktree_dir(ws_dir, &repo.name);
+
+        // Skip detached repos
+        if repo.branch == git::DETACHED {
+            progress.set_status("detached, skipped");
+            return Ok("detached, skipped".to_string());
+        }
+
+        // Dirty check + stash
+        let dirty = git::is_dirty(&worktree_path).unwrap_or(false);
+        let mut stashed = false;
+
+        if dirty && stash {
+            progress.set_status("stashing...");
+            match git::stash_push(&worktree_path) {
+                Ok(did_stash) => stashed = did_stash,
+                Err(e) => return Err(format!("stash failed: {e}")),
+            }
+        } else if dirty {
+            progress.set_status("dirty, skipped");
+            return Ok("dirty — use --stash to auto-stash".to_string());
+        }
+
+        let before = git::rev_parse_short(&worktree_path, "HEAD").unwrap_or_default();
+
+        // Fetch with deduplication: ensure only one thread fetches per source
+        progress.set_status("fetching...");
+        let fetch_result = loop {
+            let mut cache = fetch_cache.lock().unwrap();
+            match cache.get(&repo.source) {
+                Some(FetchState::Done(result)) => break result.clone(),
+                Some(FetchState::InProgress) => {
+                    drop(cache);
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                    continue;
+                }
+                None => {
+                    cache.insert(repo.source.clone(), FetchState::InProgress);
+                    drop(cache);
+
+                    let result = git::fetch(&repo.source, &repo.remote)
+                        .map_err(|e| e.to_string());
+
+                    let mut cache = fetch_cache.lock().unwrap();
+                    cache.insert(repo.source.clone(), FetchState::Done(result.clone()));
+                    break result;
+                }
+            }
+        };
+
+        if let Err(e) = fetch_result {
+            if stashed {
+                let _ = git::stash_pop(&worktree_path);
+            }
+            return Err(format!("fetch failed: {e}"));
+        }
+
+        // Rebase
+        progress.set_status("rebasing...");
+        let effective = repo.effective_upstream();
+        if git::rebase(&worktree_path, effective, &repo.remote).is_ok() {
+            let after = git::rev_parse_short(&worktree_path, "HEAD").unwrap_or_default();
+
+            let moved = if before == after {
+                "already up to date".to_string()
+            } else {
+                format!("{before} -> {after}")
+            };
+
+            if stashed {
+                progress.set_status("restoring stash...");
+                if let Err(e) = git::stash_pop(&worktree_path) {
+                    return Ok(format!("{moved} (stash pop failed: {e})"));
+                }
+                Ok(format!("{moved} (stash restored)"))
+            } else {
+                Ok(moved)
+            }
+        } else {
+            let _ = git::rebase_abort(&worktree_path);
+            if stashed {
+                let _ = git::stash_pop(&worktree_path);
+            }
+            Err("rebase conflict — aborted".to_string())
+        }
+    });
+
+    // Print per-repo results to stdout (mirrors sequential output)
+    let mut errors: Vec<(String, String)> = Vec::new();
+    for (name, result) in &results {
+        match result {
+            Ok(msg) => println!("  {} {} {}", "ok".green(), name.bold(), msg),
+            Err(e) => {
+                println!("  {} {} ({e})", "ERR".red(), name.bold());
+                errors.push((name.clone(), e.clone()));
+            }
         }
     }
 
