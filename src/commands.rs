@@ -1,6 +1,7 @@
 use std::io::{IsTerminal, Write};
 use std::path::Path;
 use std::process::Command;
+use std::sync::atomic::AtomicBool;
 
 use anyhow::{Context, Result, anyhow};
 use colored::Colorize;
@@ -151,7 +152,7 @@ fn create_from_source(
         valid_entries.len()
     );
 
-    // Add each repo from the source rig (already sorted via repos_sorted())
+    // repos_sorted() guarantees alphabetical order
     let mut errors: Vec<(String, String)> = Vec::new();
 
     for entry in &valid_entries {
@@ -842,6 +843,10 @@ fn refresh_sequential(
         }
     }
 
+    finish_refresh(manifest, ws_dir, updated)
+}
+
+fn finish_refresh(manifest: &mut Manifest, ws_dir: &Path, updated: bool) -> Result<()> {
     if updated {
         manifest.save(ws_dir)?;
     }
@@ -862,8 +867,6 @@ fn refresh_parallel(
     active_repos: &[RepoEntry],
     jobs: usize,
 ) -> Result<()> {
-    use std::sync::atomic::AtomicBool;
-
     let fetch_cache = crate::parallel::FetchCache::new();
 
     let repo_names: Vec<String> = active_repos.iter().map(|r| r.name.clone()).collect();
@@ -917,27 +920,19 @@ fn refresh_parallel(
         }
     }
 
-    if updated {
-        manifest.save(ws_dir)?;
-    }
-
-    println!();
-    if updated {
-        println!("{} Refreshed rig '{}'", "ok".green(), manifest.name);
-    } else {
-        println!("{} All default branches already up to date", "ok".green());
-    }
-
-    Ok(())
+    finish_refresh(manifest, ws_dir, updated)
 }
 
 // ---------------------------------------------------------------------------
 // sync
 // ---------------------------------------------------------------------------
 
-/// Sentinel value returned by the parallel sync closure for dirty-skipped repos.
-/// Used to distinguish dirty skips from real successes in the result display.
-const DIRTY_SENTINEL: &str = "[dirty]";
+/// Outcome of a per-repo sync operation (used by both sequential and parallel paths).
+enum SyncOutcome {
+    Synced(String),
+    DirtySkipped,
+    Detached,
+}
 
 fn print_sync_summary(dirty_skipped: &[String], errors: &[(String, String)]) -> Result<()> {
     println!();
@@ -1153,8 +1148,6 @@ fn sync_parallel(
     stash: bool,
     jobs: usize,
 ) -> Result<()> {
-    use std::sync::atomic::AtomicBool;
-
     let fetch_cache = crate::parallel::FetchCache::new();
 
     let repo_names: Vec<String> = active_repos.iter().map(|r| r.name.clone()).collect();
@@ -1165,13 +1158,11 @@ fn sync_parallel(
         let repo = active_repos[idx];
         let worktree_path = manifest.worktree_dir(ws_dir, &repo.name);
 
-        // Skip detached repos
         if repo.branch == git::DETACHED {
             progress.set_status("detached, skipped");
-            return Ok("detached, skipped".to_string());
+            return Ok(SyncOutcome::Detached);
         }
 
-        // Dirty check + stash
         let dirty = git::is_dirty(&worktree_path).unwrap_or(false);
         let mut stashed = false;
 
@@ -1183,12 +1174,11 @@ fn sync_parallel(
             }
         } else if dirty {
             progress.set_status("dirty, skipped");
-            return Ok(DIRTY_SENTINEL.to_string());
+            return Ok(SyncOutcome::DirtySkipped);
         }
 
         let before = git::rev_parse_short(&worktree_path, "HEAD").unwrap_or_default();
 
-        // Fetch with deduplication per (source, remote) pair
         progress.set_status("fetching...");
         let fetch_result = fetch_cache.fetch_once(&repo.source, &repo.remote, || {
             git::fetch(&repo.source, &repo.remote).map_err(|e| e.to_string())
@@ -1201,7 +1191,6 @@ fn sync_parallel(
             return Err(format!("fetch failed: {e}"));
         }
 
-        // Rebase
         progress.set_status("rebasing...");
         let effective = repo.effective_upstream();
         if git::rebase(&worktree_path, effective, &repo.remote).is_ok() {
@@ -1232,11 +1221,13 @@ fn sync_parallel(
             if stashed {
                 progress.set_status("restoring stash...");
                 if let Err(e) = git::stash_pop(&worktree_path) {
-                    return Ok(format!("{detail} (stash pop failed: {e})"));
+                    return Ok(SyncOutcome::Synced(format!(
+                        "{detail} (stash pop failed: {e})"
+                    )));
                 }
-                Ok(format!("{detail} (stash restored)"))
+                Ok(SyncOutcome::Synced(format!("{detail} (stash restored)")))
             } else {
-                Ok(detail)
+                Ok(SyncOutcome::Synced(detail))
             }
         } else {
             let _ = git::rebase_abort(&worktree_path);
@@ -1247,16 +1238,20 @@ fn sync_parallel(
         }
     });
 
-    // Print per-repo results to stdout (mirrors sequential output)
     let mut errors: Vec<(String, String)> = Vec::new();
     let mut dirty_skipped: Vec<String> = Vec::new();
     for (name, result) in &results {
         match result {
-            Ok(msg) if msg == DIRTY_SENTINEL => {
+            Ok(SyncOutcome::DirtySkipped) => {
                 println!("  {} {} (dirty — skipped)", "WARN".yellow(), name.bold());
                 dirty_skipped.push(name.clone());
             }
-            Ok(msg) => println!("  {} {} {}", "ok".green(), name.bold(), msg),
+            Ok(SyncOutcome::Detached) => {
+                println!("  {} {} (detached, skipped)", "ok".green(), name.bold());
+            }
+            Ok(SyncOutcome::Synced(msg)) => {
+                println!("  {} {} {}", "ok".green(), name.bold(), msg);
+            }
             Err(e) => {
                 println!("  {} {} ({e})", "ERR".red(), name.bold());
                 errors.push((name.clone(), e.clone()));
@@ -1593,14 +1588,17 @@ fn exec_sequential(
         println!();
     }
 
+    print_exec_summary(&errors)
+}
+
+fn print_exec_summary(errors: &[(String, String)]) -> Result<()> {
     if !errors.is_empty() {
         println!("{} {} repo(s) had errors:", "WARN".yellow(), errors.len());
-        for (name, err) in &errors {
+        for (name, err) in errors {
             println!("  {} {}: {}", "ERR".red(), name, err);
         }
         return Err(anyhow!("{} repo(s) had errors", errors.len()));
     }
-
     Ok(())
 }
 
@@ -1613,8 +1611,6 @@ fn exec_parallel(
     jobs: usize,
     report: &drift::DriftReport,
 ) -> Result<()> {
-    use std::sync::atomic::AtomicBool;
-
     let repo_names: Vec<String> = active_repos.iter().map(|r| r.name.clone()).collect();
     let cancel = AtomicBool::new(false);
 
@@ -1687,15 +1683,7 @@ fn exec_parallel(
         println!();
     }
 
-    if !errors.is_empty() {
-        println!("{} {} repo(s) had errors:", "WARN".yellow(), errors.len());
-        for (name, err) in &errors {
-            println!("  {} {}: {}", "ERR".red(), name, err);
-        }
-        return Err(anyhow!("{} repo(s) had errors", errors.len()));
-    }
-
-    Ok(())
+    print_exec_summary(&errors)
 }
 
 #[cfg(test)]
