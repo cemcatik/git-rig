@@ -816,29 +816,34 @@ fn refresh_sequential(
     active_repos: &[RepoEntry],
 ) -> Result<()> {
     let mut updated = false;
+    let name_width = active_repos.iter().map(|r| r.name.len()).max().unwrap_or(0);
 
     for repo in active_repos {
-        print!("  {}: ", repo.name.bold());
+        let padded = format!("{:<width$}", repo.name, width = name_width).bold();
 
         if let Err(e) = git::fetch(&repo.source, &repo.remote) {
-            println!("{} (fetch failed: {e})", "ERR".red());
+            println!("  {padded} {} (fetch failed: {e})", "ERR".red());
             continue;
         }
 
         match git::default_branch(&repo.source, &repo.remote) {
             Ok(new_branch) => {
                 if new_branch != repo.default_branch {
-                    println!("{} → {}", repo.default_branch.dimmed(), new_branch.green());
+                    println!(
+                        "  {padded} {} → {}",
+                        repo.default_branch.dimmed(),
+                        new_branch.green()
+                    );
                     if let Some(entry) = manifest.find_repo_mut(&repo.name) {
                         entry.default_branch = new_branch;
                     }
                     updated = true;
                 } else {
-                    println!("{} (unchanged)", repo.default_branch.dimmed());
+                    println!("  {padded} {} (unchanged)", repo.default_branch.dimmed());
                 }
             }
             Err(e) => {
-                println!("{} (detect failed: {e})", "ERR".red());
+                println!("  {padded} {} (detect failed: {e})", "ERR".red());
             }
         }
     }
@@ -895,14 +900,15 @@ fn refresh_parallel(
     });
 
     // Sequential merge: apply updates to manifest
+    let name_width = results.iter().map(|(n, _)| n.len()).max().unwrap_or(0);
     let mut updated = false;
     for (name, result) in &results {
+        let padded = format!("{:<width$}", name, width = name_width).bold();
         match result {
             Ok((old_branch, new_branch)) => {
                 if old_branch != new_branch {
                     println!(
-                        "  {}: {} → {}",
-                        name.bold(),
+                        "  {padded} {} → {}",
                         old_branch.dimmed(),
                         new_branch.green()
                     );
@@ -911,11 +917,11 @@ fn refresh_parallel(
                     }
                     updated = true;
                 } else {
-                    println!("  {}: {} (unchanged)", name.bold(), old_branch.dimmed());
+                    println!("  {padded} {} (unchanged)", old_branch.dimmed());
                 }
             }
             Err(e) => {
-                println!("  {}: {} ({e})", name.bold(), "ERR".red());
+                println!("  {padded} {} ({e})", "ERR".red());
             }
         }
     }
@@ -1010,15 +1016,16 @@ fn sync_sequential(
 ) -> Result<()> {
     let mut errors: Vec<(String, String)> = Vec::new();
     let mut dirty_skipped: Vec<String> = Vec::new();
+    let name_width = active_repos.iter().map(|r| r.name.len()).max().unwrap_or(0);
 
     for repo in active_repos {
         let worktree_path = manifest.worktree_dir(ws_dir, &repo.name);
+        let padded = format!("{:<width$}", repo.name, width = name_width).bold();
 
         if repo.branch == git::DETACHED {
             println!(
-                "  {} {} (detached, skipped)",
-                "-".yellow(),
-                repo.name.bold()
+                "  {} {padded} (detached, skipped)",
+                format!("{:<4}", "-").yellow(),
             );
             continue;
         }
@@ -1030,16 +1037,18 @@ fn sync_sequential(
             match git::stash_push(&worktree_path) {
                 Ok(did_stash) => stashed = did_stash,
                 Err(e) => {
-                    println!("  {} {} (stash failed: {e})", "ERR".red(), repo.name.bold());
+                    println!(
+                        "  {} {padded} (stash failed: {e})",
+                        format!("{:<4}", "ERR").red()
+                    );
                     errors.push((repo.name.clone(), format!("stash failed: {e}")));
                     continue;
                 }
             }
         } else if dirty {
             println!(
-                "  {} {} (dirty — skipped)",
-                "WARN".yellow(),
-                repo.name.bold()
+                "  {} {padded} (dirty — skipped)",
+                format!("{:<4}", "WARN").yellow(),
             );
             dirty_skipped.push(repo.name.clone());
             continue;
@@ -1050,12 +1059,15 @@ fn sync_sequential(
 
         // Fetch from the source repo (shares refs with worktree)
         if let Err(e) = git::fetch(&repo.source, &repo.remote) {
-            println!("  {} {} (fetch failed: {e})", "ERR".red(), repo.name.bold());
+            println!(
+                "  {} {padded} (fetch failed: {e})",
+                format!("{:<4}", "ERR").red()
+            );
             errors.push((repo.name.clone(), format!("fetch failed: {e}")));
             if stashed && let Err(e) = git::stash_pop(&worktree_path) {
                 eprintln!(
                     "  {} stash pop failed for {}: {e} (changes still in git stash)",
-                    "WARN".yellow(),
+                    format!("{:<4}", "WARN").yellow(),
                     repo.name
                 );
             }
@@ -1090,25 +1102,22 @@ fn sync_sequential(
             if stashed {
                 match git::stash_pop(&worktree_path) {
                     Ok(()) => println!(
-                        "  {} {} {}{}{} (stash restored)",
-                        "ok".green(),
-                        repo.name.bold(),
+                        "  {} {padded} {}{}{} (stash restored)",
+                        format!("{:<4}", "ok").green(),
                         moved,
                         behind_info,
                         upstream_info
                     ),
                     Err(e) => println!(
-                        "  {} {} {} (stash pop failed: {e})",
-                        "WARN".yellow(),
-                        repo.name.bold(),
+                        "  {} {padded} {} (stash pop failed: {e})",
+                        format!("{:<4}", "WARN").yellow(),
                         moved
                     ),
                 }
             } else {
                 println!(
-                    "  {} {} {}{}{}",
-                    "ok".green(),
-                    repo.name.bold(),
+                    "  {} {padded} {}{}{}",
+                    format!("{:<4}", "ok").green(),
                     moved,
                     behind_info,
                     upstream_info
@@ -1118,21 +1127,20 @@ fn sync_sequential(
             if let Err(e) = git::rebase_abort(&worktree_path) {
                 eprintln!(
                     "  {} rebase abort failed for {}: {e}",
-                    "WARN".yellow(),
+                    format!("{:<4}", "WARN").yellow(),
                     repo.name
                 );
             }
             if stashed && let Err(e) = git::stash_pop(&worktree_path) {
                 eprintln!(
                     "  {} stash pop failed for {}: {e} (changes still in git stash)",
-                    "WARN".yellow(),
+                    format!("{:<4}", "WARN").yellow(),
                     repo.name
                 );
             }
             println!(
-                "  {} {} (rebase conflict — aborted)",
-                "ERR".red(),
-                repo.name.bold()
+                "  {} {padded} (rebase conflict — aborted)",
+                format!("{:<4}", "ERR").red(),
             );
             errors.push((repo.name.clone(), "rebase conflict".to_string()));
         }
@@ -1238,22 +1246,31 @@ fn sync_parallel(
         }
     });
 
+    let name_width = results.iter().map(|(n, _)| n.len()).max().unwrap_or(0);
+
     let mut errors: Vec<(String, String)> = Vec::new();
     let mut dirty_skipped: Vec<String> = Vec::new();
     for (name, result) in &results {
+        let padded = format!("{:<width$}", name, width = name_width).bold();
         match result {
             Ok(SyncOutcome::DirtySkipped) => {
-                println!("  {} {} (dirty — skipped)", "WARN".yellow(), name.bold());
+                println!(
+                    "  {} {padded} (dirty — skipped)",
+                    format!("{:<4}", "WARN").yellow()
+                );
                 dirty_skipped.push(name.clone());
             }
             Ok(SyncOutcome::Detached) => {
-                println!("  {} {} (detached, skipped)", "ok".green(), name.bold());
+                println!(
+                    "  {} {padded} (detached, skipped)",
+                    format!("{:<4}", "ok").green()
+                );
             }
             Ok(SyncOutcome::Synced(msg)) => {
-                println!("  {} {} {}", "ok".green(), name.bold(), msg);
+                println!("  {} {padded} {msg}", format!("{:<4}", "ok").green());
             }
             Err(e) => {
-                println!("  {} {} ({e})", "ERR".red(), name.bold());
+                println!("  {} {padded} ({e})", format!("{:<4}", "ERR").red());
                 errors.push((name.clone(), e.clone()));
             }
         }

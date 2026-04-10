@@ -81,18 +81,22 @@ impl RepoProgress<'_> {
     }
 }
 
-fn spinner_style() -> ProgressStyle {
-    ProgressStyle::with_template(" {spinner:.cyan} {prefix:<20!.bold} {wide_msg}")
+fn spinner_style(width: usize) -> ProgressStyle {
+    ProgressStyle::with_template(&format!(
+        " {{spinner:.cyan}} {{prefix:<{width}!.bold}} {{wide_msg}}"
+    ))
+    .unwrap()
+    .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏", "·"])
+}
+
+fn success_style(width: usize) -> ProgressStyle {
+    ProgressStyle::with_template(&format!(" ✓ {{prefix:<{width}!.bold}} {{wide_msg:.green}}"))
         .unwrap()
-        .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏", "·"])
 }
 
-fn success_style() -> ProgressStyle {
-    ProgressStyle::with_template(" ✓ {prefix:<20!.bold} {wide_msg:.green}").unwrap()
-}
-
-fn failure_style() -> ProgressStyle {
-    ProgressStyle::with_template(" ✗ {prefix:<20!.bold} {wide_msg:.red}").unwrap()
+fn failure_style(width: usize) -> ProgressStyle {
+    ProgressStyle::with_template(&format!(" ✗ {{prefix:<{width}!.bold}} {{wide_msg:.red}}"))
+        .unwrap()
 }
 
 /// Run `op` for each item in parallel with up to `jobs` workers.
@@ -115,8 +119,13 @@ where
     let mp = MultiProgress::new();
     let is_tty = !mp.is_hidden();
 
-    // Create spinner bars in sorted order — all visible before work starts
-    let style = spinner_style();
+    // Compute column width from the longest repo name
+    let name_width = names.iter().map(|n| n.len()).max().unwrap_or(0);
+
+    // Pre-create styles once (each involves format! + template parse)
+    let style = spinner_style(name_width);
+    let done_style = success_style(name_width);
+    let fail_style = failure_style(name_width);
     let bars: Vec<ProgressBar> = names
         .iter()
         .map(|name| {
@@ -161,11 +170,11 @@ where
                     // Update spinner to final state
                     match &result {
                         Ok(_) => {
-                            bars[idx].set_style(success_style());
+                            bars[idx].set_style(done_style.clone());
                             bars[idx].finish_with_message("done");
                         }
                         Err(e) => {
-                            bars[idx].set_style(failure_style());
+                            bars[idx].set_style(fail_style.clone());
                             bars[idx].abandon_with_message(e.clone());
                         }
                     }
@@ -186,7 +195,7 @@ where
     // Mark cancelled (unstarted) bars so they don't remain in "queued" state
     for (i, slot) in results.iter().enumerate() {
         if slot.lock().unwrap().is_none() {
-            bars[i].set_style(failure_style());
+            bars[i].set_style(fail_style.clone());
             bars[i].abandon_with_message("cancelled".to_string());
         }
     }
