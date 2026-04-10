@@ -1013,9 +1013,10 @@ fn exec_fail_fast() {
     let ws_dir = sandbox.create_workspace_with_repos("my-ws", &["repo-a", "repo-b"]);
 
     // `false` exits 1; --fail-fast should stop after repo-a and skip repo-b
+    // Use --jobs=1 to force sequential — parallel mode launches all at once
     Command::cargo_bin("git-rig")
         .unwrap()
-        .args(["exec", "--fail-fast", "--", "false"])
+        .args(["exec", "--fail-fast", "--jobs=1", "--", "false"])
         .current_dir(&ws_dir)
         .assert()
         .failure() // exec exits non-zero when any repo fails

@@ -1410,7 +1410,7 @@ pub fn exec(
     filter_repos: &[String],
     cmd: &[String],
     fail_fast: bool,
-    _cli_jobs: Option<usize>,
+    cli_jobs: Option<usize>,
 ) -> Result<()> {
     let (ws_dir, manifest) = workspace::resolve_workspace(name)?;
     manifest.validate_repo_filter(filter_repos)?;
@@ -1418,19 +1418,42 @@ pub fn exec(
     let report = drift::check_drift(&manifest, &ws_dir);
     drift::print_drift_warnings(&report, filter_repos, false);
 
+    // Collect active repos
+    let active_repos: Vec<&RepoEntry> = manifest
+        .repos_sorted()
+        .into_iter()
+        .filter(|repo| {
+            if !filter_repos.is_empty() && !filter_repos.iter().any(|f| f == &repo.name) {
+                return false;
+            }
+            true
+        })
+        .collect();
+
+    let jobs = resolve_jobs(cli_jobs, &manifest, active_repos.len());
+
+    if jobs <= 1 {
+        return exec_sequential(&manifest, &ws_dir, &active_repos, cmd, fail_fast, &report);
+    }
+
+    exec_parallel(&manifest, &ws_dir, &active_repos, cmd, fail_fast, jobs, &report)
+}
+
+fn exec_sequential(
+    manifest: &Manifest,
+    ws_dir: &std::path::Path,
+    active_repos: &[&RepoEntry],
+    cmd: &[String],
+    fail_fast: bool,
+    report: &drift::DriftReport,
+) -> Result<()> {
     let mut errors: Vec<(String, String)> = Vec::new();
 
-    for repo in manifest.repos_sorted() {
-        // Skip repos not in the filter
-        if !filter_repos.is_empty() && !filter_repos.iter().any(|f| f == &repo.name) {
-            continue;
-        }
-
-        let worktree_path = manifest.worktree_dir(&ws_dir, &repo.name);
+    for repo in active_repos {
+        let worktree_path = manifest.worktree_dir(ws_dir, &repo.name);
 
         println!("{} {}", ">>>".bold(), repo.name.bold());
 
-        // Skip only when the worktree is physically unavailable
         if report.has_worktree_unavailable(&repo.name) {
             println!("{} worktree unavailable, skipped", "WARN".yellow());
             println!();
@@ -1461,6 +1484,105 @@ pub fn exec(
 
         println!();
     }
+
+    if !errors.is_empty() {
+        println!("{} {} repo(s) had errors:", "WARN".yellow(), errors.len());
+        for (name, err) in &errors {
+            println!("  {} {}: {}", "ERR".red(), name, err);
+        }
+        return Err(anyhow!("{} repo(s) had errors", errors.len()));
+    }
+
+    Ok(())
+}
+
+fn exec_parallel(
+    manifest: &Manifest,
+    ws_dir: &std::path::Path,
+    active_repos: &[&RepoEntry],
+    cmd: &[String],
+    fail_fast: bool,
+    jobs: usize,
+    report: &drift::DriftReport,
+) -> Result<()> {
+    use std::sync::atomic::AtomicBool;
+
+    let repo_names: Vec<String> = active_repos.iter().map(|r| r.name.clone()).collect();
+    let cancel = AtomicBool::new(false);
+
+    // Each Ok result contains (stdout, stderr)
+    let results = crate::parallel::run_parallel(
+        &repo_names,
+        jobs,
+        &cancel,
+        |idx, progress| {
+            let repo = active_repos[idx];
+            let worktree_path = manifest.worktree_dir(ws_dir, &repo.name);
+
+            if report.has_worktree_unavailable(&repo.name) {
+                progress.set_status("unavailable, skipped");
+                return Ok((String::new(), String::new()));
+            }
+
+            progress.set_status("running...");
+
+            let output = Command::new(&cmd[0])
+                .args(&cmd[1..])
+                .current_dir(&worktree_path)
+                .output();
+
+            match output {
+                Ok(o) => {
+                    let stdout = String::from_utf8_lossy(&o.stdout).to_string();
+                    let stderr = String::from_utf8_lossy(&o.stderr).to_string();
+
+                    if o.status.success() {
+                        Ok((stdout, stderr))
+                    } else {
+                        let code = o.status.code().unwrap_or(-1);
+                        if fail_fast {
+                            cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                        }
+                        Err(format!("exit code {code}"))
+                    }
+                }
+                Err(e) => {
+                    if fail_fast {
+                        cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    Err(format!("failed to execute: {e}"))
+                }
+            }
+        },
+    );
+
+    // Print captured output in alphabetical order
+    for (name, result) in &results {
+        println!("{} {}", ">>>".bold(), name.bold());
+        match result {
+            Ok((stdout, stderr)) => {
+                if !stdout.is_empty() {
+                    print!("{stdout}");
+                }
+                if !stderr.is_empty() {
+                    eprint!("{stderr}");
+                }
+            }
+            Err(_) => {} // Error printed in summary below
+        }
+        println!();
+    }
+
+    let errors: Vec<(String, String)> = results
+        .iter()
+        .filter_map(|(name, result)| {
+            if let Err(e) = result {
+                Some((name.clone(), e.clone()))
+            } else {
+                None
+            }
+        })
+        .collect();
 
     if !errors.is_empty() {
         println!("{} {} repo(s) had errors:", "WARN".yellow(), errors.len());
