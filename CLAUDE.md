@@ -77,3 +77,17 @@ Each test creates its own `TestSandbox` (temp dir) — no shared state, no CWD m
 - `git rig destroy` force-removes worktrees (even dirty ones). `git rig remove` does not — it will fail on dirty worktrees.
 - `--upstream` sets the branch that `sync` rebases onto **and** the starting point for the worktree. The worktree is created from `{remote}/{upstream}`, so git tracking and `git log` show the upstream ref. The upstream branch must exist on the remote at add time. If it's later deleted, `sync` will fail with a git error.
 - **Cross-platform: the project ships Windows builds via CI.** Never use `std::os::unix::*` without `#[cfg(unix)]` guards. The compiler won't warn you locally — it only fails on the Windows CI runner. When platform-specific code is needed, use a thin abstraction (see `symlink_or_copy` in `provision.rs`). See `docs/solutions/cross-platform-symlink-fallback.md`.
+
+## Agent skills
+
+### Issue tracker
+
+Issues live as GitHub issues in `cemcatik/git-rig`, managed via the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default canonical vocabulary — `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context — one `CONTEXT.md` + `docs/adr/` at the repo root, created lazily by `/domain-modeling`. See `docs/agents/domain.md`.
