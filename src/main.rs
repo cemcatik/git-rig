@@ -155,6 +155,11 @@ enum Commands {
         #[arg(long)]
         stash: bool,
 
+        /// Reset branches whose work is already landed upstream (squash-merged)
+        /// back to the landed state, non-interactively
+        #[arg(long)]
+        reconcile: bool,
+
         /// Number of parallel jobs (default: auto, -j1 for sequential)
         #[arg(short, long)]
         jobs: Option<usize>,
@@ -309,8 +314,9 @@ fn main() -> Result<()> {
             name,
             repos,
             stash,
+            reconcile,
             jobs,
-        } => commands::sync(name.as_deref(), &repos, stash, jobs),
+        } => commands::sync(name.as_deref(), &repos, stash, reconcile, jobs),
         Commands::Refresh { name, jobs } => commands::refresh(name.as_deref(), jobs),
         Commands::Exec {
             rig,

@@ -256,6 +256,76 @@ pub fn rebase_abort(repo_dir: &Path) -> Result<()> {
     git_quiet(repo_dir, &["rebase", "--abort"])
 }
 
+// ---------------------------------------------------------------------------
+// Post-merge reconciliation primitives
+// ---------------------------------------------------------------------------
+
+/// Outcome of an in-memory 3-way merge via `git merge-tree --write-tree`.
+///
+/// `merge-tree` performs a recursive 3-way merge with no working tree, no index
+/// lock, and no checkout — it just prints the resulting tree OID. It is the only
+/// git primitive correct across squash / merge / rebase landings *and* the
+/// "upstream moved on" case. Requires git >= 2.38.
+pub enum MergeTreeOutcome {
+    /// Merge applied cleanly; `tree` is the resulting top-level tree OID.
+    Clean { tree: String },
+    /// Merge had conflicts.
+    Conflict,
+}
+
+/// Perform an in-memory 3-way merge of `branch` into `target`.
+///
+/// Returns [`MergeTreeOutcome::Clean`] (exit 0, with the result tree OID) or
+/// [`MergeTreeOutcome::Conflict`] (exit 1). Any other exit code — a bad ref, an
+/// unsupported git — is a hard error, so callers can distinguish "conflicts"
+/// (a legitimate answer) from "could not run the check".
+pub fn merge_tree(repo_dir: &Path, target: &str, branch: &str) -> Result<MergeTreeOutcome> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo_dir)
+        .args(["merge-tree", "--write-tree", target, branch])
+        .output()
+        .with_context(|| "failed to run git merge-tree")?;
+
+    // `merge-tree --write-tree` prints the top-level tree OID as stdout line 1
+    // on BOTH a clean merge (exit 0) and a conflicted one (exit 1, followed by
+    // conflicted-path entries). A bad/unmergeable ref also exits 1 but writes
+    // nothing to stdout (the error goes to stderr) — so we key on stdout, not
+    // the exit code alone, to tell a real conflict from "couldn't run the check".
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let tree = stdout.lines().next().unwrap_or("").trim().to_string();
+
+    match output.status.code() {
+        Some(0) if !tree.is_empty() => Ok(MergeTreeOutcome::Clean { tree }),
+        Some(1) if !tree.is_empty() => Ok(MergeTreeOutcome::Conflict),
+        other => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            Err(anyhow!(
+                "git merge-tree failed (exit {other:?}): {}",
+                stderr.trim()
+            ))
+        }
+    }
+}
+
+/// Resolve a revision to the OID of the tree it points at (`<rev>^{tree}`).
+pub fn tree_oid(repo_dir: &Path, rev: &str) -> Result<String> {
+    git_output(repo_dir, &["rev-parse", &format!("{rev}^{{tree}}")])
+}
+
+/// Hard-reset the worktree to `target` (discards commits on top; content-safe
+/// only when the caller has proven `target` is tree-equal — see reconciliation).
+pub fn reset_hard(repo_dir: &Path, target: &str) -> Result<()> {
+    git_quiet(repo_dir, &["reset", "--hard", target])
+}
+
+/// Clear the branch's upstream tracking config. Cosmetic — `sync` reads its
+/// target from `.rig.json`, not git tracking config — so callers ignore errors
+/// (e.g. no upstream was configured).
+pub fn branch_unset_upstream(repo_dir: &Path) -> Result<()> {
+    git_quiet(repo_dir, &["branch", "--unset-upstream"])
+}
+
 pub fn stash_push(repo_dir: &Path) -> Result<bool> {
     let before = git_output(repo_dir, &["stash", "list"])?;
     git_quiet(

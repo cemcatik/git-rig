@@ -285,6 +285,137 @@ fn stash_pop_restores_stashed_changes() {
 }
 
 // ---------------------------------------------------------------------------
+// Post-merge reconciliation primitives
+// ---------------------------------------------------------------------------
+
+/// A multi-commit branch squash-merged into main is byte-identical to main:
+/// merging it back adds nothing, so merge-tree is clean AND its result tree
+/// equals main's tree. This is the LANDED predicate — and the case naive
+/// primitives (`--merged`, `cherry`) get wrong.
+#[test]
+fn merge_tree_landed_squash_is_tree_equal() {
+    let sandbox = common::TestSandbox::new();
+    let clone = sandbox.create_repo("mt-landed");
+
+    // Feature branch with two commits (multi-commit exercises the squash case)
+    common::git(&clone, &["checkout", "-b", "feature"]);
+    sandbox.commit_file("mt-landed", "a.txt", "aaa", "add a");
+    sandbox.commit_file("mt-landed", "b.txt", "bbb", "add b");
+
+    // Squash-merge feature into main
+    common::git(&clone, &["checkout", "main"]);
+    common::git(&clone, &["merge", "--squash", "feature"]);
+    common::git(&clone, &["commit", "-m", "squash feature"]);
+
+    match git::merge_tree(&clone, "main", "feature").unwrap() {
+        git::MergeTreeOutcome::Clean { tree } => {
+            let target_tree = git::tree_oid(&clone, "main").unwrap();
+            assert_eq!(
+                tree, target_tree,
+                "merging a landed branch into main must add nothing"
+            );
+        }
+        git::MergeTreeOutcome::Conflict => panic!("expected clean merge for landed branch"),
+    }
+}
+
+/// A branch with work NOT in main merges cleanly but its result tree differs
+/// (it adds a file). Clean-but-not-equal is the NOT-LANDED "merge-only-clean"
+/// case: remediation is declined (a reset would discard the un-landed file).
+#[test]
+fn merge_tree_partial_is_clean_but_not_tree_equal() {
+    let sandbox = common::TestSandbox::new();
+    let clone = sandbox.create_repo("mt-partial");
+
+    common::git(&clone, &["checkout", "-b", "feature"]);
+    sandbox.commit_file("mt-partial", "only-on-feature.txt", "x", "add feature file");
+    common::git(&clone, &["checkout", "main"]);
+
+    match git::merge_tree(&clone, "main", "feature").unwrap() {
+        git::MergeTreeOutcome::Clean { tree } => {
+            let target_tree = git::tree_oid(&clone, "main").unwrap();
+            assert_ne!(
+                tree, target_tree,
+                "a branch with un-landed work must not be tree-equal to main"
+            );
+        }
+        git::MergeTreeOutcome::Conflict => panic!("non-overlapping change should merge cleanly"),
+    }
+}
+
+/// Genuinely divergent branches (same file edited two ways) conflict.
+#[test]
+fn merge_tree_divergent_conflicts() {
+    let sandbox = common::TestSandbox::new();
+    let clone = sandbox.create_repo("mt-divergent");
+
+    common::git(&clone, &["checkout", "-b", "feature"]);
+    sandbox.commit_file(
+        "mt-divergent",
+        "README.md",
+        "feature side\n",
+        "feature edit",
+    );
+    common::git(&clone, &["checkout", "main"]);
+    sandbox.commit_file("mt-divergent", "README.md", "main side\n", "main edit");
+
+    assert!(matches!(
+        git::merge_tree(&clone, "main", "feature").unwrap(),
+        git::MergeTreeOutcome::Conflict
+    ));
+}
+
+/// A bad target ref is an error, not a "conflict" — callers must be able to
+/// tell "could not run the check" apart from a legitimate conflict verdict.
+#[test]
+fn merge_tree_bad_ref_errors() {
+    let sandbox = common::TestSandbox::new();
+    let clone = sandbox.create_repo("mt-bad-ref");
+    assert!(git::merge_tree(&clone, "origin/does-not-exist", "main").is_err());
+}
+
+#[test]
+fn tree_oid_matches_for_same_content() {
+    let sandbox = common::TestSandbox::new();
+    let clone = sandbox.create_repo("tree-oid");
+    let a = git::tree_oid(&clone, "HEAD").unwrap();
+    let b = git::tree_oid(&clone, "main").unwrap();
+    assert_eq!(a, b);
+    assert!(!a.is_empty());
+}
+
+#[test]
+fn reset_hard_moves_head_to_target() {
+    let sandbox = common::TestSandbox::new();
+    let clone = sandbox.create_repo("reset-hard");
+
+    common::git(&clone, &["checkout", "-b", "feature"]);
+    sandbox.commit_file("reset-hard", "extra.txt", "extra", "extra commit");
+    assert!(clone.join("extra.txt").exists());
+
+    git::reset_hard(&clone, "origin/main").unwrap();
+
+    let head = git::rev_parse_short(&clone, "HEAD").unwrap();
+    let origin_main = git::rev_parse_short(&clone, "origin/main").unwrap();
+    assert_eq!(head, origin_main);
+    assert!(
+        !clone.join("extra.txt").exists(),
+        "reset --hard should discard the un-landed commit's file"
+    );
+}
+
+#[test]
+fn branch_unset_upstream_succeeds_when_tracking_set() {
+    let sandbox = common::TestSandbox::new();
+    // create_repo pushes with `-u`, so `main` tracks `origin/main`.
+    let clone = sandbox.create_repo("unset-upstream");
+    git::branch_unset_upstream(&clone).unwrap();
+    // The tracking ref is gone: git can no longer resolve `@{u}` for main.
+    let head = common::git(&clone, &["symbolic-ref", "--short", "HEAD"]);
+    assert_eq!(head, "main");
+}
+
+// ---------------------------------------------------------------------------
 // Misc
 // ---------------------------------------------------------------------------
 

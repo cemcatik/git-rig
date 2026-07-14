@@ -938,45 +938,170 @@ enum SyncOutcome {
     Synced(String),
     DirtySkipped,
     Detached,
+    /// Upstream target could not be resolved — non-fatal skip.
+    TargetSkipped(String),
+    /// Rebase conflicted but the branch's work is provably landed upstream.
+    /// Carries what the deferred remediation pass needs.
+    Reconcilable {
+        target_branch: String,
+        upstream_gone: bool,
+    },
 }
 
-fn print_sync_summary(dirty_skipped: &[String], errors: &[(String, String)]) -> Result<()> {
+/// A repo whose work is provably landed upstream, awaiting the deferred
+/// (sequential, consent-gated) remediation pass. Owned copies of the fields
+/// remediation needs, so it never has to borrow the manifest.
+struct Reconcilable {
+    name: String,
+    remote: String,
+    branch: String,
+    /// Remote branch name to reset onto (may differ from the manifest upstream
+    /// when the upstream is gone and we fell back to the default branch).
+    target_branch: String,
+    upstream_gone: bool,
+}
+
+/// What the classify pass produced. The final summary and remediation are
+/// driven from this, so classification stays free of manifest mutation.
+struct ClassifyResults {
+    dirty_skipped: Vec<String>,
+    target_skipped: Vec<(String, String)>,
+    errors: Vec<(String, String)>,
+    reconcilables: Vec<Reconcilable>,
+}
+
+/// What the deferred remediation pass produced.
+struct RemediationResults {
+    reconciled: Vec<String>,
+    untouched: Vec<String>,
+    errors: Vec<(String, String)>,
+}
+
+/// The comparison target `sync` rebases onto and classifies against.
+///
+/// See the spec's "Comparison Target" table: a safe-degrading chain that reuses
+/// sync's rebase ref, resolved from remote-tracking refs *after* `fetch --prune`.
+struct SyncTarget {
+    /// Remote branch name (e.g. `master`); the full ref is `{remote}/{branch}`.
+    branch: String,
+    /// The configured upstream ref was gone after prune and we fell back to the
+    /// default branch — the manifest `upstream` field should be repaired.
+    upstream_gone: bool,
+}
+
+/// Resolve the branch `sync` should rebase onto, per the comparison-target chain.
+///
+/// `Err` is a **non-fatal** skip reason (the repo is left alone), never a hard
+/// error that would strand the rest of the sync.
+fn resolve_sync_target(
+    repo: &RepoEntry,
+    worktree: &Path,
+) -> std::result::Result<SyncTarget, String> {
+    let effective = repo.effective_upstream();
+    if git::remote_branch_exists(worktree, effective, &repo.remote) {
+        return Ok(SyncTarget {
+            branch: effective.to_string(),
+            upstream_gone: false,
+        });
+    }
+
+    // The configured upstream ref is gone after prune. A post-merge topic branch
+    // almost always merged into the default branch, so fall back to it rather
+    // than stranding the user this feature exists for.
+    let default = &repo.default_branch;
+    if effective != default && git::remote_branch_exists(worktree, default, &repo.remote) {
+        return Ok(SyncTarget {
+            branch: default.clone(),
+            upstream_gone: true,
+        });
+    }
+
+    Err("cannot determine upstream target".to_string())
+}
+
+/// The authoritative LANDED predicate: an in-memory 3-way merge of `branch` into
+/// `target_ref` yields a tree byte-identical to the target — so merging the
+/// branch adds nothing and it is provably redundant. Any failure (old git, bad
+/// ref) degrades to `false`, i.e. today's "genuine conflict" behavior.
+fn is_landed(worktree: &Path, target_ref: &str, branch: &str) -> bool {
+    match git::merge_tree(worktree, target_ref, branch) {
+        Ok(git::MergeTreeOutcome::Clean { tree }) => {
+            git::tree_oid(worktree, target_ref).is_ok_and(|target_tree| tree == target_tree)
+        }
+        _ => false,
+    }
+}
+
+fn print_sync_summary(classify: &ClassifyResults, remediation: &RemediationResults) -> Result<()> {
     println!();
-    if !dirty_skipped.is_empty() {
+
+    if !classify.dirty_skipped.is_empty() {
         println!(
             "{} {} repo(s) skipped (dirty — use {} to auto-stash):",
             "WARN".yellow(),
-            dirty_skipped.len(),
+            classify.dirty_skipped.len(),
             "--stash".bold()
         );
-        for name in dirty_skipped {
+        for name in &classify.dirty_skipped {
             println!("  {} {}", "WARN".yellow(), name);
         }
-        if !errors.is_empty() {
-            println!();
+    }
+
+    if !classify.target_skipped.is_empty() {
+        println!(
+            "{} {} repo(s) skipped (upstream unresolvable):",
+            "WARN".yellow(),
+            classify.target_skipped.len()
+        );
+        for (name, reason) in &classify.target_skipped {
+            println!("  {} {}: {}", "WARN".yellow(), name, reason);
         }
     }
+
+    // Reconciliation summary.
+    let reconciled = remediation.reconciled.len();
+    let left = remediation.untouched.len();
+    if reconciled > 0 {
+        println!("{} {reconciled} branch(es) reconciled", "ok".green());
+    }
+    if left > 0 {
+        println!(
+            "{} {left} reconcilable branch(es) left untouched — run {}",
+            "~".cyan(),
+            "git rig sync --reconcile".bold(),
+        );
+    }
+
+    // Errors: genuine conflicts + fetch/stash failures + remediation failures.
+    let mut errors: Vec<&(String, String)> = classify.errors.iter().collect();
+    errors.extend(remediation.errors.iter());
     if !errors.is_empty() {
         println!("{} {} repo(s) had issues:", "WARN".yellow(), errors.len());
-        for (name, err) in errors {
+        for (name, err) in &errors {
             println!("  {} {}: {}", "ERR".red(), name, err);
         }
         return Err(anyhow!("{} repo(s) had issues", errors.len()));
     }
-    if dirty_skipped.is_empty() {
+
+    if classify.dirty_skipped.is_empty()
+        && classify.target_skipped.is_empty()
+        && reconciled == 0
+        && left == 0
+    {
         println!("{} All repos synced", "ok".green());
     }
+
     Ok(())
 }
 
-#[allow(clippy::too_many_lines)]
 pub fn sync(
     name: Option<&str>,
     filter_repos: &[String],
     stash: bool,
+    reconcile: bool,
     cli_jobs: Option<usize>,
 ) -> Result<()> {
-    let (ws_dir, manifest) = workspace::resolve_workspace(name)?;
+    let (ws_dir, mut manifest) = workspace::resolve_workspace(name)?;
     manifest.validate_repo_filter(filter_repos)?;
 
     let report = drift::check_drift(&manifest, &ws_dir);
@@ -1001,21 +1126,204 @@ pub fn sync(
 
     println!("Syncing rig '{}'\n", manifest.name.bold());
 
-    if jobs <= 1 {
-        return sync_sequential(&manifest, &ws_dir, &active_repos, stash);
-    }
+    // Phase 1: classify (read-only, parallel-safe). Surfaces the ~ reconcilable
+    // third state without mutating anything.
+    let classify = if jobs <= 1 {
+        sync_sequential(&manifest, &ws_dir, &active_repos, stash)
+    } else {
+        sync_parallel(&manifest, &ws_dir, &active_repos, stash, jobs)
+    };
 
-    sync_parallel(&manifest, &ws_dir, &active_repos, stash, jobs)
+    // Phase 2: remediate landed branches (sequential, consent-gated). This is
+    // where the only mutation happens — reset --hard + manifest repair.
+    let remediation = remediate_reconcilables(
+        &mut manifest,
+        &ws_dir,
+        &classify.reconcilables,
+        stash,
+        reconcile,
+    );
+
+    print_sync_summary(&classify, &remediation)
 }
 
+/// Deferred, single-threaded remediation of provably-landed branches.
+///
+/// Consent model: `--reconcile` auto-approves; an interactive TTY prompts per
+/// repo; piped output only detects-and-hints (never mutates). Mutation order
+/// per repo — re-verify → clean/stash gate → print pre-reset SHA → reset --hard
+/// → (gone upstream) repair manifest → stash pop — is fixed by the spec so a
+/// partial failure never lies. Continue-and-report: a per-repo failure never
+/// aborts the others.
+fn remediate_reconcilables(
+    manifest: &mut Manifest,
+    ws_dir: &Path,
+    reconcilables: &[Reconcilable],
+    stash: bool,
+    reconcile: bool,
+) -> RemediationResults {
+    let mut results = RemediationResults {
+        reconciled: Vec::new(),
+        untouched: Vec::new(),
+        errors: Vec::new(),
+    };
+
+    if reconcilables.is_empty() {
+        return results;
+    }
+
+    let interactive = std::io::stdin().is_terminal();
+    let mut manifest_changed = false;
+
+    println!();
+    println!("{}", "Reconcilable (work already landed upstream):".bold());
+
+    for r in reconcilables {
+        let worktree_path = manifest.worktree_dir(ws_dir, &r.name);
+        let target_ref = format!("{}/{}", r.remote, r.target_branch);
+
+        // Consent gate.
+        let proceed = if reconcile {
+            true
+        } else if interactive {
+            print!("  reset {} to {target_ref}? [y/N] ", r.name.bold());
+            let _ = std::io::stdout().flush();
+            let mut input = String::new();
+            let _ = std::io::stdin().read_line(&mut input);
+            input.trim_start().starts_with(['y', 'Y'])
+        } else {
+            // Piped / non-TTY without the flag: detect-and-hint, never mutate.
+            println!(
+                "  {} {} already landed — run {}",
+                "~".cyan(),
+                r.name.bold(),
+                "git rig sync --reconcile".bold()
+            );
+            false
+        };
+
+        if !proceed {
+            results.untouched.push(r.name.clone());
+            continue;
+        }
+
+        // 1. Re-verify LANDED at the instant of reset (closes the TOCTOU window
+        //    between the parallel classify pass and now).
+        if !is_landed(&worktree_path, &target_ref, &r.branch) {
+            println!(
+                "  {} {} changed since classification — skipped",
+                "~".cyan(),
+                r.name.bold()
+            );
+            results.untouched.push(r.name.clone());
+            continue;
+        }
+
+        // 2. Clean-worktree gate. The classifier only sees commits, so a dirty
+        //    reset could discard uncommitted work — require clean, or --stash.
+        let dirty = git::is_dirty(&worktree_path).unwrap_or(false);
+        let mut stashed = false;
+        if dirty {
+            if stash {
+                match git::stash_push(&worktree_path) {
+                    Ok(did) => stashed = did,
+                    Err(e) => {
+                        println!("  {} {} stash failed: {e}", "ERR".red(), r.name.bold());
+                        results
+                            .errors
+                            .push((r.name.clone(), format!("stash failed: {e}")));
+                        continue;
+                    }
+                }
+            } else {
+                println!(
+                    "  {} {} worktree dirty, not reset — commit/stash or use {}",
+                    "~".cyan(),
+                    r.name.bold(),
+                    "--stash".bold()
+                );
+                results.untouched.push(r.name.clone());
+                continue;
+            }
+        }
+
+        // 3. Capture the pre-reset SHA so recovery is discoverable (reflog).
+        let pre_sha = git::rev_parse_short(&worktree_path, "HEAD").unwrap_or_default();
+
+        // 4. reset --hard. Content-safe by the tree-equality proof.
+        if let Err(e) = git::reset_hard(&worktree_path, &target_ref) {
+            if stashed {
+                let _ = git::stash_pop(&worktree_path);
+            }
+            println!("  {} {} reset failed: {e}", "ERR".red(), r.name.bold());
+            results
+                .errors
+                .push((r.name.clone(), format!("reset failed: {e}")));
+            continue;
+        }
+
+        // 5. Gone upstream: repair the manifest (the durable fix — sync reads
+        //    its target from .rig.json, not git tracking). Do this *after* a
+        //    successful reset so a failed reset never clears the record of intent.
+        if r.upstream_gone {
+            if let Some(entry) = manifest.find_repo_mut(&r.name) {
+                entry.upstream = None;
+            }
+            manifest_changed = true;
+            let _ = git::branch_unset_upstream(&worktree_path); // cosmetic
+        }
+
+        // 6. Restore stash. On pop conflict the reset stands and the stash is
+        //    preserved — report, don't roll back.
+        if stashed && let Err(e) = git::stash_pop(&worktree_path) {
+            println!(
+                "  {} {} reset done, stash pop failed: {e} (changes still in git stash)",
+                "ERR".red(),
+                r.name.bold()
+            );
+            results.errors.push((
+                r.name.clone(),
+                format!("reset done, stash pop failed: {e} (changes still in git stash)"),
+            ));
+            continue;
+        }
+
+        let gone_note = if r.upstream_gone {
+            " (upstream cleared)"
+        } else {
+            ""
+        };
+        println!(
+            "  {} {} reset to {target_ref}{gone_note} (was {pre_sha} — recover via git reflog)",
+            "ok".green(),
+            r.name.bold()
+        );
+        results.reconciled.push(r.name.clone());
+    }
+
+    if manifest_changed && let Err(e) = manifest.save(ws_dir) {
+        results.errors.push((
+            "<manifest>".to_string(),
+            format!("failed to save .rig.json: {e}"),
+        ));
+    }
+
+    results
+}
+
+#[allow(clippy::too_many_lines)]
 fn sync_sequential(
     manifest: &Manifest,
     ws_dir: &std::path::Path,
     active_repos: &[&RepoEntry],
     stash: bool,
-) -> Result<()> {
-    let mut errors: Vec<(String, String)> = Vec::new();
-    let mut dirty_skipped: Vec<String> = Vec::new();
+) -> ClassifyResults {
+    let mut out = ClassifyResults {
+        dirty_skipped: Vec::new(),
+        target_skipped: Vec::new(),
+        errors: Vec::new(),
+        reconcilables: Vec::new(),
+    };
     let name_width = active_repos.iter().map(|r| r.name.len()).max().unwrap_or(0);
 
     for repo in active_repos {
@@ -1041,7 +1349,8 @@ fn sync_sequential(
                         "  {} {padded} (stash failed: {e})",
                         format!("{:<4}", "ERR").red()
                     );
-                    errors.push((repo.name.clone(), format!("stash failed: {e}")));
+                    out.errors
+                        .push((repo.name.clone(), format!("stash failed: {e}")));
                     continue;
                 }
             }
@@ -1050,7 +1359,7 @@ fn sync_sequential(
                 "  {} {padded} (dirty — skipped)",
                 format!("{:<4}", "WARN").yellow(),
             );
-            dirty_skipped.push(repo.name.clone());
+            out.dirty_skipped.push(repo.name.clone());
             continue;
         }
 
@@ -1063,7 +1372,8 @@ fn sync_sequential(
                 "  {} {padded} (fetch failed: {e})",
                 format!("{:<4}", "ERR").red()
             );
-            errors.push((repo.name.clone(), format!("fetch failed: {e}")));
+            out.errors
+                .push((repo.name.clone(), format!("fetch failed: {e}")));
             if stashed && let Err(e) = git::stash_pop(&worktree_path) {
                 eprintln!(
                     "  {} stash pop failed for {}: {e} (changes still in git stash)",
@@ -1074,12 +1384,27 @@ fn sync_sequential(
             continue;
         }
 
-        // Rebase worktree branch onto remote/<upstream>
-        let effective = repo.effective_upstream();
-        if git::rebase(&worktree_path, effective, &repo.remote).is_ok() {
+        // Resolve the comparison target *after* prune, from remote-tracking refs.
+        let target = match resolve_sync_target(repo, &worktree_path) {
+            Ok(t) => t,
+            Err(reason) => {
+                if stashed {
+                    let _ = git::stash_pop(&worktree_path);
+                }
+                println!(
+                    "  {} {padded} ({reason})",
+                    format!("{:<4}", "WARN").yellow()
+                );
+                out.target_skipped.push((repo.name.clone(), reason));
+                continue;
+            }
+        };
+
+        // Rebase worktree branch onto the resolved target.
+        if git::rebase(&worktree_path, &target.branch, &repo.remote).is_ok() {
             let after = git::rev_parse_short(&worktree_path, "HEAD").unwrap_or_default();
             let (_ahead, behind) =
-                git::ahead_behind(&worktree_path, &repo.branch, effective, &repo.remote);
+                git::ahead_behind(&worktree_path, &repo.branch, &target.branch, &repo.remote);
 
             let moved = if before == after {
                 "already up to date".dimmed().to_string()
@@ -1093,34 +1418,23 @@ fn sync_sequential(
                 String::new()
             };
 
-            let upstream_info = if repo.upstream.is_some() {
-                format!(" {}", format!("(upstream: {effective})").dimmed())
-            } else {
-                String::new()
-            };
+            let target_note = target_note(repo, &target);
 
             if stashed {
                 match git::stash_pop(&worktree_path) {
                     Ok(()) => println!(
-                        "  {} {padded} {}{}{} (stash restored)",
+                        "  {} {padded} {moved}{behind_info}{target_note} (stash restored)",
                         format!("{:<4}", "ok").green(),
-                        moved,
-                        behind_info,
-                        upstream_info
                     ),
                     Err(e) => println!(
-                        "  {} {padded} {} (stash pop failed: {e})",
+                        "  {} {padded} {moved} (stash pop failed: {e})",
                         format!("{:<4}", "WARN").yellow(),
-                        moved
                     ),
                 }
             } else {
                 println!(
-                    "  {} {padded} {}{}{}",
+                    "  {} {padded} {moved}{behind_info}{target_note}",
                     format!("{:<4}", "ok").green(),
-                    moved,
-                    behind_info,
-                    upstream_info
                 );
             }
         } else {
@@ -1138,24 +1452,58 @@ fn sync_sequential(
                     repo.name
                 );
             }
-            println!(
-                "  {} {padded} (rebase conflict — aborted)",
-                format!("{:<4}", "ERR").red(),
-            );
-            errors.push((repo.name.clone(), "rebase conflict".to_string()));
+
+            // Reactive classification: was that conflict real, or a squash artifact?
+            let target_ref = format!("{}/{}", repo.remote, target.branch);
+            if is_landed(&worktree_path, &target_ref, &repo.branch) {
+                println!(
+                    "  {} {padded} (already landed — reconcilable)",
+                    format!("{:<4}", "~").cyan(),
+                );
+                out.reconcilables.push(Reconcilable {
+                    name: repo.name.clone(),
+                    remote: repo.remote.clone(),
+                    branch: repo.branch.clone(),
+                    target_branch: target.branch.clone(),
+                    upstream_gone: target.upstream_gone,
+                });
+            } else {
+                println!(
+                    "  {} {padded} (rebase conflict — aborted)",
+                    format!("{:<4}", "ERR").red(),
+                );
+                out.errors
+                    .push((repo.name.clone(), "rebase conflict".to_string()));
+            }
         }
     }
 
-    print_sync_summary(&dirty_skipped, &errors)
+    out
 }
 
+/// The dimmed target annotation appended to a synced line: surfaces a gone
+/// upstream, or a custom upstream, and stays silent for the plain default case.
+fn target_note(repo: &RepoEntry, target: &SyncTarget) -> String {
+    if target.upstream_gone {
+        format!(
+            " {}",
+            format!("(upstream gone → {})", target.branch).dimmed()
+        )
+    } else if repo.upstream.is_some() {
+        format!(" {}", format!("(upstream: {})", target.branch).dimmed())
+    } else {
+        String::new()
+    }
+}
+
+#[allow(clippy::too_many_lines)]
 fn sync_parallel(
     manifest: &Manifest,
     ws_dir: &std::path::Path,
     active_repos: &[&RepoEntry],
     stash: bool,
     jobs: usize,
-) -> Result<()> {
+) -> ClassifyResults {
     let fetch_cache = crate::parallel::FetchCache::new();
 
     let repo_names: Vec<String> = active_repos.iter().map(|r| r.name.clone()).collect();
@@ -1199,12 +1547,23 @@ fn sync_parallel(
             return Err(format!("fetch failed: {e}"));
         }
 
+        // Resolve the comparison target *after* prune, from remote-tracking refs.
+        let target = match resolve_sync_target(repo, &worktree_path) {
+            Ok(t) => t,
+            Err(reason) => {
+                if stashed {
+                    let _ = git::stash_pop(&worktree_path);
+                }
+                progress.set_status(&reason);
+                return Ok(SyncOutcome::TargetSkipped(reason));
+            }
+        };
+
         progress.set_status("rebasing...");
-        let effective = repo.effective_upstream();
-        if git::rebase(&worktree_path, effective, &repo.remote).is_ok() {
+        if git::rebase(&worktree_path, &target.branch, &repo.remote).is_ok() {
             let after = git::rev_parse_short(&worktree_path, "HEAD").unwrap_or_default();
             let (_ahead, behind) =
-                git::ahead_behind(&worktree_path, &repo.branch, effective, &repo.remote);
+                git::ahead_behind(&worktree_path, &repo.branch, &target.branch, &repo.remote);
 
             let moved = if before == after {
                 "already up to date".to_string()
@@ -1218,13 +1577,15 @@ fn sync_parallel(
                 String::new()
             };
 
-            let upstream_info = if repo.upstream.is_some() {
-                format!(" (upstream: {effective})")
+            let target_info = if target.upstream_gone {
+                format!(" (upstream gone → {})", target.branch)
+            } else if repo.upstream.is_some() {
+                format!(" (upstream: {})", target.branch)
             } else {
                 String::new()
             };
 
-            let detail = format!("{moved}{behind_info}{upstream_info}");
+            let detail = format!("{moved}{behind_info}{target_info}");
 
             if stashed {
                 progress.set_status("restoring stash...");
@@ -1242,14 +1603,33 @@ fn sync_parallel(
             if stashed {
                 let _ = git::stash_pop(&worktree_path);
             }
-            Err("rebase conflict — aborted".to_string())
+
+            // Reactive classification (read-only, parallel-safe): was that
+            // conflict real, or a squash artifact?
+            let target_ref = format!("{}/{}", repo.remote, target.branch);
+            if is_landed(&worktree_path, &target_ref, &repo.branch) {
+                progress.set_status("already landed — reconcilable");
+                Ok(SyncOutcome::Reconcilable {
+                    target_branch: target.branch.clone(),
+                    upstream_gone: target.upstream_gone,
+                })
+            } else {
+                Err("rebase conflict — aborted".to_string())
+            }
         }
     });
 
     let name_width = results.iter().map(|(n, _)| n.len()).max().unwrap_or(0);
 
-    let mut errors: Vec<(String, String)> = Vec::new();
-    let mut dirty_skipped: Vec<String> = Vec::new();
+    // Repo names are unique within a rig, so look the entry up by name.
+    let repo_by_name = |name: &str| active_repos.iter().find(|r| r.name == name);
+
+    let mut out = ClassifyResults {
+        dirty_skipped: Vec::new(),
+        target_skipped: Vec::new(),
+        errors: Vec::new(),
+        reconcilables: Vec::new(),
+    };
     for (name, result) in &results {
         let padded = format!("{:<width$}", name, width = name_width).bold();
         match result {
@@ -1258,7 +1638,7 @@ fn sync_parallel(
                     "  {} {padded} (dirty — skipped)",
                     format!("{:<4}", "WARN").yellow()
                 );
-                dirty_skipped.push(name.clone());
+                out.dirty_skipped.push(name.clone());
             }
             Ok(SyncOutcome::Detached) => {
                 println!(
@@ -1266,25 +1646,54 @@ fn sync_parallel(
                     format!("{:<4}", "ok").green()
                 );
             }
+            Ok(SyncOutcome::TargetSkipped(reason)) => {
+                println!(
+                    "  {} {padded} ({reason})",
+                    format!("{:<4}", "WARN").yellow()
+                );
+                out.target_skipped.push((name.clone(), reason.clone()));
+            }
             Ok(SyncOutcome::Synced(msg)) => {
                 println!("  {} {padded} {msg}", format!("{:<4}", "ok").green());
             }
+            Ok(SyncOutcome::Reconcilable {
+                target_branch,
+                upstream_gone,
+            }) => {
+                println!(
+                    "  {} {padded} (already landed — reconcilable)",
+                    format!("{:<4}", "~").cyan()
+                );
+                if let Some(repo) = repo_by_name(name) {
+                    out.reconcilables.push(Reconcilable {
+                        name: name.clone(),
+                        remote: repo.remote.clone(),
+                        branch: repo.branch.clone(),
+                        target_branch: target_branch.clone(),
+                        upstream_gone: *upstream_gone,
+                    });
+                }
+            }
             Err(e) => {
                 println!("  {} {padded} ({e})", format!("{:<4}", "ERR").red());
-                errors.push((name.clone(), e.clone()));
+                out.errors.push((name.clone(), e.clone()));
             }
         }
     }
 
-    print_sync_summary(&dirty_skipped, &errors)
+    out
 }
 
 // ---------------------------------------------------------------------------
 // doctor
 // ---------------------------------------------------------------------------
 
-/// Minimum git version required by git-rig (for `git worktree repair`).
-const MIN_GIT_VERSION: (u32, u32, u32) = (2, 30, 0);
+/// Minimum git version required by git-rig.
+///
+/// Bumped 2.30 → 2.38 for `git merge-tree --write-tree` (Oct 2022), the
+/// in-memory 3-way merge that powers post-merge reconciliation in `sync`.
+/// A single global floor is simpler than feature-gating the classifier.
+const MIN_GIT_VERSION: (u32, u32, u32) = (2, 38, 0);
 
 pub fn doctor(name: Option<&str>) -> Result<()> {
     let mut has_issues = false;
@@ -1292,7 +1701,7 @@ pub fn doctor(name: Option<&str>) -> Result<()> {
     println!("{}", "Environment".bold().underline());
     println!();
 
-    // R4a + R4b: Git on PATH and version >= 2.30
+    // R4a + R4b: Git on PATH and version >= 2.38
     // Single git_version() call checks both — saves a subprocess on the happy path.
     match git::git_version() {
         Ok((major, minor, patch)) => {
@@ -1306,7 +1715,9 @@ pub fn doctor(name: Option<&str>) -> Result<()> {
                 print_fail(&format!(
                     "git version {major}.{minor}.{patch} is below minimum {min_major}.{min_minor}"
                 ));
-                println!("    git worktree repair requires git >= {min_major}.{min_minor}.");
+                println!(
+                    "    git rig sync requires `git merge-tree --write-tree` (git >= {min_major}.{min_minor})."
+                );
                 println!("    Fix: upgrade git to {min_major}.{min_minor}+");
                 // R10: short-circuit
                 println!();

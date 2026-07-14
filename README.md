@@ -147,6 +147,7 @@ Drift detection runs automatically on `status`, `sync`, `exec`, and `refresh`. N
 ```bash
 git rig sync              # all repos in current workspace (parallel by default)
 git rig sync --stash      # auto-stash dirty repos before rebasing
+git rig sync --reconcile  # reset squash-merged branches to their landed state
 git rig sync --repo api-server              # sync only specific repo(s)
 git rig sync --repo api-server --repo web   # sync multiple
 git rig sync -j1          # force sequential execution
@@ -164,6 +165,17 @@ ok All repos synced
 ```
 
 Repos with drift (branch mismatch, unexpected detached HEAD, missing source) are automatically skipped during sync to prevent rebasing the wrong branch.
+
+#### Post-merge reconciliation
+
+When a branch is **squash-merged** upstream, its work is already in the default branch — but `git rebase` (per-commit replay) still conflicts, because the individual commits can no longer be applied onto the squashed result. `git rig sync` recognizes this: when a rebase conflicts, it runs an in-memory 3-way merge (`git merge-tree`) to ask "does this branch still add anything?" If the answer is no — the branch is **provably landed** — sync surfaces a distinct `~ reconcilable` state instead of a dead-end `ERR rebase conflict`:
+
+```
+  ~    return-services (already landed — reconcilable)
+  ~    returns-ui      (already landed — reconcilable)
+```
+
+Offer to remediate with `--reconcile` (or answer the per-repo `[y/N]` prompt in a terminal). Reconciling resets the branch to the landed state (`git reset --hard`, safe by construction since the trees are byte-identical) and, if the branch's upstream was deleted post-merge, clears the stale `upstream` from `.rig.json`. The pre-reset SHA is printed for reflog recovery. Genuinely divergent branches keep the unchanged `ERR (rebase conflict — aborted)` behavior. Requires git ≥ 2.38 for `git merge-tree --write-tree`.
 
 ### Run a command across repos
 
@@ -275,7 +287,7 @@ git rig doctor
 Environment
 
   PASS  git found on PATH
-  PASS  git version 2.39.0 (>= 2.30 required)
+  PASS  git version 2.39.0 (>= 2.38 required)
 
 Rig: my-feature (2 repos)
 
@@ -297,7 +309,7 @@ Rig: my-feature (2 repos)
 ok All checks passed
 ```
 
-Checks environment prerequisites (git version >= 2.30) and per-repo health (worktree integrity, branch state, remote reachability, upstream validity). Works outside a rig too — shows environment checks only. Exits 1 on any issue for scripting/CI use.
+Checks environment prerequisites (git version >= 2.38) and per-repo health (worktree integrity, branch state, remote reachability, upstream validity). Works outside a rig too — shows environment checks only. Exits 1 on any issue for scripting/CI use.
 
 ### Shell completions
 

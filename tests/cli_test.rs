@@ -879,12 +879,12 @@ fn status_shows_upstream_indicator() {
 }
 
 #[test]
-fn sync_with_nonexistent_upstream_reports_error() {
+fn sync_with_unresolvable_upstream_degrades_to_default() {
     let sandbox = common::TestSandbox::new();
     let ws_dir = sandbox.create_workspace_with_repos("my-ws", &["repo-a"]);
     let repo_dir = sandbox.path().join("repo-a");
 
-    // Set upstream to a branch that doesn't exist on the remote
+    // Set upstream to a branch that doesn't resolve on the remote.
     Command::cargo_bin("git-rig")
         .unwrap()
         .args(["add", "--upstream", "nonexistent-branch"])
@@ -893,14 +893,177 @@ fn sync_with_nonexistent_upstream_reports_error() {
         .assert()
         .success();
 
-    // Sync should report an error for this repo
+    // Per the comparison-target chain, an unresolvable upstream safe-degrades to
+    // the default branch (flagged "upstream gone") rather than hard-erroring and
+    // stranding the sync. The branch's work is already on main, so it syncs clean.
     Command::cargo_bin("git-rig")
         .unwrap()
         .arg("sync")
         .current_dir(&ws_dir)
         .assert()
+        .success()
+        .stdout(predicate::str::contains("upstream gone"))
+        .stdout(predicate::str::contains("main"));
+}
+
+// ---------------------------------------------------------------------------
+// sync: post-merge reconciliation
+// ---------------------------------------------------------------------------
+
+/// Build a rig whose branch was squash-merged into `origin/main`: the rig branch
+/// has two commits editing a shared file, and `main` has the identical final
+/// content in a single squash commit. Rebasing the branch onto main therefore
+/// conflicts (the squash artifact this feature exists for), yet the branch is
+/// byte-identical to main — i.e. provably LANDED. Returns the workspace dir.
+fn setup_squash_merged_rig(sandbox: &common::TestSandbox) -> std::path::PathBuf {
+    let ws_dir = sandbox.create_workspace_with_repos("my-ws", &["repo-a"]);
+    let worktree = ws_dir.join("repo-a");
+
+    // Two commits on the rig branch, editing a shared file.
+    std::fs::write(worktree.join("README.md"), "branch-v1\n").unwrap();
+    common::git(&worktree, &["commit", "-am", "v1"]);
+    std::fs::write(worktree.join("README.md"), "branch-final\n").unwrap();
+    common::git(&worktree, &["commit", "-am", "v2"]);
+
+    // Squash-merge the same final content into main on the remote, via the
+    // source clone (which is checked out on main).
+    let clone = sandbox.path().join("repo-a");
+    std::fs::write(clone.join("README.md"), "branch-final\n").unwrap();
+    common::git(&clone, &["commit", "-am", "squash PR #5486"]);
+    common::git(&clone, &["push", "origin", "main"]);
+
+    ws_dir
+}
+
+#[test]
+fn sync_reconcile_resets_squash_merged_branch() {
+    let sandbox = common::TestSandbox::new();
+    let ws_dir = setup_squash_merged_rig(&sandbox);
+    let worktree = ws_dir.join("repo-a");
+
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .args(["sync", "--reconcile"])
+        .current_dir(&ws_dir)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("already landed"))
+        .stdout(predicate::str::contains("reconciled"))
+        .stdout(predicate::str::contains("recover via git reflog"));
+
+    // The rig branch was reset to origin/main: HEAD now equals origin/main.
+    let head = common::git(&worktree, &["rev-parse", "HEAD"]);
+    let origin_main = common::git(&worktree, &["rev-parse", "origin/main"]);
+    assert_eq!(
+        head, origin_main,
+        "branch should be reset to the landed state"
+    );
+    let log = common::git(&worktree, &["log", "--oneline"]);
+    assert!(log.contains("squash PR #5486"));
+}
+
+#[test]
+fn sync_detects_landed_but_does_not_mutate_without_flag() {
+    let sandbox = common::TestSandbox::new();
+    let ws_dir = setup_squash_merged_rig(&sandbox);
+    let worktree = ws_dir.join("repo-a");
+    let before = common::git(&worktree, &["rev-parse", "HEAD"]);
+
+    // Piped (non-TTY) without --reconcile: detect-and-hint, never mutate.
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .arg("sync")
+        .current_dir(&ws_dir)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("already landed"))
+        .stdout(predicate::str::contains("--reconcile"));
+
+    // HEAD is untouched — the branch still holds its own commits.
+    let after = common::git(&worktree, &["rev-parse", "HEAD"]);
+    assert_eq!(
+        before, after,
+        "branch must not be mutated without --reconcile"
+    );
+}
+
+#[test]
+fn sync_genuine_conflict_still_errors() {
+    let sandbox = common::TestSandbox::new();
+    let ws_dir = sandbox.create_workspace_with_repos("my-ws", &["repo-a"]);
+    let worktree = ws_dir.join("repo-a");
+
+    // Rig branch edits README one way...
+    std::fs::write(worktree.join("README.md"), "rig side\n").unwrap();
+    common::git(&worktree, &["commit", "-am", "rig edit"]);
+
+    // ...while main diverges with a DIFFERENT, un-landed change.
+    let clone = sandbox.path().join("repo-a");
+    std::fs::write(clone.join("README.md"), "main side\n").unwrap();
+    common::git(&clone, &["commit", "-am", "main edit"]);
+    common::git(&clone, &["push", "origin", "main"]);
+
+    // A genuinely divergent branch keeps today's behavior: ERR, non-zero exit.
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .args(["sync", "--reconcile"])
+        .current_dir(&ws_dir)
+        .assert()
         .failure()
-        .stdout(predicate::str::contains("ERR"));
+        .stdout(predicate::str::contains("ERR"))
+        .stdout(predicate::str::contains("rebase conflict"));
+}
+
+#[test]
+fn sync_reconcile_clears_gone_upstream_from_manifest() {
+    let sandbox = common::TestSandbox::new();
+    let ws_dir = setup_squash_merged_rig(&sandbox);
+    let repo_dir = sandbox.path().join("repo-a");
+
+    // Point the manifest at a custom upstream that does not resolve on the remote
+    // (simulating a post-merge topic branch deleted after squash).
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .args(["add", "--upstream", "integration"])
+        .arg(repo_dir.to_str().unwrap())
+        .current_dir(&ws_dir)
+        .assert()
+        .success();
+
+    // Upstream is recorded in the manifest before reconcile.
+    let manifest_before = std::fs::read_to_string(ws_dir.join(".rig.json")).unwrap();
+    assert!(manifest_before.contains("integration"));
+
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .args(["sync", "--reconcile"])
+        .current_dir(&ws_dir)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("reconciled"));
+
+    // The durable fix: the gone upstream is cleared from .rig.json.
+    let manifest_after = std::fs::read_to_string(ws_dir.join(".rig.json")).unwrap();
+    assert!(
+        !manifest_after.contains("integration"),
+        "gone upstream should be cleared from the manifest"
+    );
+}
+
+#[test]
+fn sync_parallel_classifies_reconcilable() {
+    let sandbox = common::TestSandbox::new();
+    let ws_dir = setup_squash_merged_rig(&sandbox);
+
+    // Force the parallel path (-j2) even with a single repo — the classifier
+    // runs inside the worker pool and must surface the ~ reconcilable state.
+    Command::cargo_bin("git-rig")
+        .unwrap()
+        .args(["sync", "-j2"])
+        .current_dir(&ws_dir)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("already landed"));
 }
 
 #[test]
